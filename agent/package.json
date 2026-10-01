@@ -1,0 +1,35 @@
+{
+  "name": "wenming-agent-ui",
+  "private": true,
+  "version": "2.0.0",
+  "description": "智能体 Agent 子项目构建工程（React + Tailwind + shadcn 风格组件；core 层零框架、可 Node 单测）",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "watch": "node build.mjs --watch",
+    "test": "node --test \"test/**/*.test.mjs\"",
+    "lint": "eslint src test build.mjs",
+    "dup": "jscpd --min-tokens 40 --reporters console --ignore \"**/node_modules/**\" src",
+    "cycles": "madge --circular --extensions js,jsx src",
+    "check": "npm run lint && npm run lint:budget && npm run dup && npm run cycles && npm run test",
+    "lint:budget": "node scripts/lint-budget.mjs"
+  },
+  "dependencies": {
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.548.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tailwind-merge": "^3.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.1.16",
+    "esbuild": "^0.28.2",
+    "eslint": "^10.11.0",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "jscpd": "^5.3.0",
+    "madge": "^8.0.0",
+    "tailwindcss": "^4.1.16"
+  }
+}

@@ -1,0 +1,283 @@
+/* ui/styles.css —— Tailwind v4 入口 + 主题令牌
+ *
+ *  设计取向：主流 AI 客户端（shadcn/ui 那一套）的观感——中性灰底 + 细边框 + 一处强调色，
+ *  深色优先；亮色与强调色都由这里的 CSS 变量切换（不使用 max-width 媒体查询那种散弹式覆盖）。
+ *
+ *  主题开关挂在 <html> 上：data-theme="dark|light"、data-accent="blue|violet|…"、data-density。
+ *  Tailwind 的 dark: 变体按 class 判定（见下面的 @custom-variant），所以 React 侧只需切属性。
+ */
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/* ============================ 令牌 ============================ */
+:root {
+  --radius: 0.8rem;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* 亮色（中性灰阶，参照 shadcn/ui 的 zinc 取向：底略灰、卡片纯白、边框极轻） */
+  --background: #fafafa;
+  --foreground: #09090b;
+  --card: #ffffff;
+  --card-foreground: #09090b;
+  --muted: #f4f4f5;
+  --muted-foreground: #71717a;
+  --subtle: #a1a1aa;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --input: #ffffff;
+  --ring: #6366f1;
+  --primary: #4f46e5;
+  --primary-foreground: #ffffff;
+  --accent-bg: #f4f4f5;
+  --accent-fg: #18181b;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --success: #16a34a;
+  --warning: #d97706;
+  --user-bubble: #f4f4f5;
+  --user-bubble-fg: #09090b;
+  --code-bg: #f4f4f5;
+  --shadow-color: 240 10% 10%;
+  --scrollbar: #d4d4d8;
+}
+
+[data-theme="dark"] {
+  --background: #09090b;
+  --foreground: #fafafa;
+  --card: #101012;
+  --card-foreground: #fafafa;
+  --muted: #18181b;
+  --muted-foreground: #a1a1aa;
+  --subtle: #71717a;
+  --border: #232327;
+  --border-strong: #33333a;
+  --input: #141417;
+  --ring: #818cf8;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --accent-bg: #1c1c20;
+  --accent-fg: #e4e4e7;
+  --destructive: #f87171;
+  --destructive-foreground: #1a0f0f;
+  --success: #4ade80;
+  --warning: #fbbf24;
+  --user-bubble: #27272a;
+  --user-bubble-fg: #fafafa;
+  --code-bg: #0f0f11;
+  --shadow-color: 240 60% 2%;
+  --scrollbar: #2e2e33;
+}
+
+/* 强调色（只换主色与配套的浅底，其余令牌不动） */
+[data-accent="violet"] { --primary: #8b5cf6; --ring: #a78bfa; }
+[data-accent="emerald"] { --primary: #10b981; --ring: #34d399; }
+[data-accent="amber"] { --primary: #f59e0b; --ring: #fbbf24; }
+[data-accent="rose"] { --primary: #f43f5e; --ring: #fb7185; }
+[data-accent="cyan"] { --primary: #06b6d4; --ring: #22d3ee; }
+[data-theme="light"][data-accent] { --accent-fg: var(--primary); }
+
+/* 界面密度（消息间距与控件高度） */
+[data-density="compact"] { --row-h: 2rem; --msg-gap: 0.75rem; }
+[data-density="cozy"] { --row-h: 2.25rem; --msg-gap: 1.25rem; }
+[data-density="comfortable"] { --row-h: 2.5rem; --msg-gap: 1.75rem; }
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-subtle: var(--subtle);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-accent: var(--accent-bg);
+  --color-accent-foreground: var(--accent-fg);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-user-bubble: var(--user-bubble);
+  --color-user-bubble-foreground: var(--user-bubble-fg);
+  --color-code: var(--code-bg);
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 0.2rem);
+  --radius-sm: calc(var(--radius) - 0.35rem);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+}
+
+/* ============================ 基础 ============================ */
+* { border-color: var(--border); }
+/* 高度链：整页固定为视口高度，滚动只发生在聊天区内部。
+   2026-09-29 修：这里原来写的是 #root，而页面挂载点是 #app（index.html）——
+   高度链断掉之后 #app 的高度由内容撑开，消息一多整页就高于视口，
+   底部输入框被顶到折叠线下且滚不到（表现为"像手机版、没有输入框"）。 */
+html, body, #app { height: 100%; }
+#app { display: flex; height: 100dvh; min-height: 0; overflow: hidden; }
+#app > * { min-height: 0; }
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+html[data-fontscale="0.9"] { font-size: 13px; }
+html[data-fontscale="1"] { font-size: 14px; }
+html[data-fontscale="1.1"] { font-size: 15.5px; }
+html[data-fontscale="1.2"] { font-size: 17px; }
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar); border-radius: 6px;
+  border: 2px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); background-clip: content-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ============================ 消息区的 Markdown 排版 ============================ */
+.md { line-height: 1.72; word-break: break-word; }
+/* 流式"尾巴模式"：正文很大时只画末尾几 KB 的纯文本，不做 Markdown 解析、也不生成上千个块级元素
+   ——把每帧的重排/重绘成本压成常数（见 Message.jsx 的 STREAM_TAIL_AT） */
+.md-tail { white-space: pre-wrap; word-break: break-word; font-family: inherit; font-size: inherit; margin: 0; }
+.md > *:first-child { margin-top: 0; }
+.md > *:last-child { margin-bottom: 0; }
+.md p { margin: 0 0 0.7em; }
+.md h1, .md h2, .md h3, .md h4 { margin: 1.1em 0 0.5em; font-weight: 650; line-height: 1.35; }
+.md h1 { font-size: 1.32em; }
+.md h2 { font-size: 1.18em; }
+.md h3 { font-size: 1.06em; }
+.md ul, .md ol { margin: 0.5em 0 0.8em; padding-left: 1.4em; }
+.md li { margin: 0.25em 0; }
+.md blockquote {
+  border-left: 3px solid var(--primary); margin: 0.8em 0; padding: 0.1em 0 0.1em 0.8em;
+  color: var(--muted-foreground);
+}
+.md hr { border: none; border-top: 1px solid var(--border); margin: 1em 0; }
+.md a { color: var(--primary); text-decoration: none; }
+.md a:hover { text-decoration: underline; }
+.md del { color: var(--subtle); }
+.md .md-code {
+  background: var(--code-bg); border: 1px solid var(--border); padding: 0.1em 0.35em;
+  border-radius: 0.3em; font-family: var(--font-mono); font-size: 0.88em;
+}
+.md .md-table-wrap { overflow-x: auto; margin: 0.8em 0; }
+.md table { border-collapse: collapse; width: 100%; font-size: 0.93em; }
+.md th, .md td { border: 1px solid var(--border); padding: 0.35em 0.7em; }
+.md th { background: var(--muted); font-weight: 600; }
+
+/* 代码块（带语言标签与复制按钮） */
+.codeblock { background: var(--code-bg); border: 1px solid var(--border); border-radius: var(--radius-md); overflow: hidden; margin: 0.8em 0; }
+.codeblock-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+  padding: 0.25rem 0.6rem; background: var(--muted); border-bottom: 1px solid var(--border);
+  font-family: var(--font-mono); font-size: 0.72rem; color: var(--muted-foreground);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.codeblock pre { margin: 0; padding: 0.75rem 0.9rem; overflow-x: auto; }
+.codeblock code { font-family: var(--font-mono); font-size: 0.86rem; line-height: 1.6; }
+
+/* 流式光标 */
+.stream-cursor::after {
+  content: "▌"; color: var(--primary); margin-left: 1px;
+  animation: blink 1s steps(2, start) infinite;
+}
+@keyframes blink { 50% { opacity: 0; } }
+
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.rise { animation: rise 0.22s ease; }
+@keyframes flash-ring {
+  from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--primary) 60%, transparent); }
+  to { box-shadow: 0 0 0 10px transparent; }
+}
+.flash { animation: flash-ring 1.2s ease-out 1; }
+
+/* ============================ 弹层进出动画 ============================ */
+/* Radix 的 Dialog/DropdownMenu/Select/Tooltip/Collapsible 靠 animationend 判断退出动画播完
+   （没装 tailwindcss-animate 之类的插件，所以这里手写 keyframes，用 data-state 驱动）。
+   缩放用独立的 scale 属性，避免覆盖 Dialog 居中用的 -translate-x/y 变换。 */
+@keyframes ui-fade-in { from { opacity: 0; } }
+@keyframes ui-fade-out { to { opacity: 0; } }
+@keyframes ui-pop-in { from { opacity: 0; scale: 0.96; } }
+@keyframes ui-pop-out { to { opacity: 0; scale: 0.96; } }
+@keyframes ui-slide-in-right { from { transform: translateX(100%); } }
+@keyframes ui-slide-out-right { to { transform: translateX(100%); } }
+@keyframes ui-slide-in-left { from { transform: translateX(-100%); } }
+@keyframes ui-slide-out-left { to { transform: translateX(-100%); } }
+@keyframes ui-collapse-open { from { height: 0; } to { height: var(--radix-collapsible-content-height); } }
+@keyframes ui-collapse-close { from { height: var(--radix-collapsible-content-height); } to { height: 0; } }
+
+.ui-anim-fade[data-state="open"] { animation: ui-fade-in 0.15s ease-out; }
+.ui-anim-fade[data-state="closed"] { animation: ui-fade-out 0.12s ease-in; }
+.ui-anim-pop[data-state="open"] { animation: ui-pop-in 0.16s ease-out; }
+.ui-anim-pop[data-state="closed"] { animation: ui-pop-out 0.12s ease-in; }
+.ui-anim-slide-right[data-state="open"] { animation: ui-slide-in-right 0.22s cubic-bezier(0.22, 1, 0.36, 1); }
+.ui-anim-slide-right[data-state="closed"] { animation: ui-slide-out-right 0.18s ease-in; }
+.ui-anim-slide-left[data-state="open"] { animation: ui-slide-in-left 0.22s cubic-bezier(0.22, 1, 0.36, 1); }
+.ui-anim-slide-left[data-state="closed"] { animation: ui-slide-out-left 0.18s ease-in; }
+.ui-collapse[data-state="open"] { animation: ui-collapse-open 0.2s ease-out; }
+.ui-collapse[data-state="closed"] { animation: ui-collapse-close 0.2s ease-in; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-anim-fade, .ui-anim-pop, .ui-anim-slide-right, .ui-anim-slide-left, .ui-collapse { animation: none !important; }
+}
+
+/* ============================ 聊天区补充（React 侧） ============================ */
+/* 触屏没有 hover：带 .touch-visible 的"悬停才出现"操作按钮（消息操作 / 会话重命名删除）常显 */
+@media (hover: none) {
+  .touch-visible { opacity: 1 !important; }
+}
+
+/* Markdown 代码块里的复制按钮：HTML 由 features/chat-utils.js 的 codeRenderer 生成（不走 React），
+   点击由聊天区容器上的事件委托处理（[data-copy]） */
+.md-copy {
+  cursor: pointer; font: inherit; line-height: 1.4;
+  border: 1px solid var(--border); border-radius: 0.35rem;
+  background: var(--card); color: var(--muted-foreground);
+  padding: 0 0.45rem;
+}
+.md-copy:hover { color: var(--foreground); border-color: var(--border-strong); }
+
+
+/* ============================ 两个"细节质感"工具类 ============================
+   照 shadcn/ui 2026-06 的 chat 组件配套做法：
+   · shimmer —— 流式状态文字（"正在读取文件…"）的呼吸感，比转圈更少打扰；
+   · scroll-fade —— 滚动容器上下边缘渐隐，暗示"还有内容"，不用加遮罩层或滚动监听。 */
+@keyframes agent-shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+.shimmer {
+  background: linear-gradient(90deg,
+    var(--muted-foreground) 0%, var(--muted-foreground) 35%,
+    var(--foreground) 50%,
+    var(--muted-foreground) 65%, var(--muted-foreground) 100%);
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: agent-shimmer 2.2s linear infinite;
+}
+.scroll-fade-y {
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 20px), transparent 100%);
+  mask-image: linear-gradient(to bottom, transparent 0, #000 14px, #000 calc(100% - 20px), transparent 100%);
+}
+
+/* Marker（会话中的状态行 / 分隔线）：工具活动、上下文压缩、耗时都用它，不用卡片 */
+.marker {
+  display: flex; align-items: center; gap: 0.5rem;
+  padding: 0.35rem 0.15rem; font-size: 0.78rem; color: var(--muted-foreground);
+}
+.marker + .marker { border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
+.marker-sep { display: flex; align-items: center; gap: 0.6rem; font-size: 0.72rem; color: var(--subtle); }
+.marker-sep::before, .marker-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }

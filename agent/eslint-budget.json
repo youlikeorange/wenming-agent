@@ -1,0 +1,4 @@
+{
+  "maxWarnings": 79,
+  "note": "eslint warning 的上限；只减不增（见 scripts/lint-budget.mjs）。当前主要是 complexity×57 / max-depth×12 / max-lines-per-function×8，集中在协议解析与 Agent 循环等高风险位置，按业务需要逐个还。"
+}

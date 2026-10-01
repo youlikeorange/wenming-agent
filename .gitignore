@@ -1,0 +1,26 @@
+# 依赖（200MB+，永远不入库；部署机自己 npm install）
+# 不写结尾的斜杠：这样连「指向 node_modules 的软链」也一起忽略
+node_modules
+
+# 构建产物：界面打包结果由 agent/src 构建得出，不入库
+public/llm-chat/vendor/
+
+# 内部审计记录：只留在本机站点里，不对外公开（sync/restore 都会跳过，见 tools/paths.conf）
+agent/AUDIT.md
+agent/AUDIT-2026-09-30-INDUSTRIAL.md
+
+# 本机路径配置（每台机器自己的站点根目录）
+tools/site.conf
+
+# 临时/本地文件
+*.log
+*.tmp
+*.swp
+.DS_Store
+.env
+.env.*
+tmp/
+.backups/
+
+# 说明：用户数据与模型密钥不在本仓库任何路径下 —— 它们在宿主机的
+# STATE_DIR（默认 ~/.local/share/wenming-web），随站点运行产生，与代码分离。

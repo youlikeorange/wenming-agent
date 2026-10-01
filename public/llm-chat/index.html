@@ -1,0 +1,17 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark" data-accent="blue" data-density="cozy">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>智能体 Agent · 文明论研究</title>
+<!-- 界面与逻辑都在 agent/ 构建工程里（源码 agent/src/），产物两个文件：
+     vendor/agent.js（React 界面 + core 逻辑）、vendor/agent.css（Tailwind + 主题令牌）。
+     改源码后在该目录执行 npm run build（或 npm run watch）。 -->
+<link rel="stylesheet" href="vendor/agent.css">
+</head>
+<body>
+<div id="app"></div>
+<noscript>这个页面需要 JavaScript：它要连本机的模型服务并渲染对话。</noscript>
+<script src="vendor/agent.js"></script>
+</body>
+</html>
