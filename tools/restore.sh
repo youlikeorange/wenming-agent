@@ -120,7 +120,8 @@ TAR_LIST=()
 for p in "${PATHS[@]}"; do [ -e "$SITE_ROOT/$p" ] && TAR_LIST+=("$p"); done
 [ "$WITH_HOST" = 1 ] && for h in "${SYNC_ONLY[@]}"; do [ -e "$SITE_ROOT/$h" ] && TAR_LIST+=("$h"); done
 if [ "${#TAR_LIST[@]}" -gt 0 ]; then
-  # 依赖（node_modules）与构建产物（vendor）不进备份：都能再生成，且体积大
+  # 依赖（node_modules）不进备份（体积大、能再装）；vendor 也不进（仓库里就有预构建副本，
+  # 末尾还会按恢复后的源码重建一次）
   tar --exclude='agent/node_modules' --exclude='public/llm-chat/vendor' \
       -czf "$BACKUP" -C "$SITE_ROOT" "${TAR_LIST[@]}"
   echo "▶ 已备份站点现状：$BACKUP ($(du -h "$BACKUP" | cut -f1)；不含 node_modules 与构建产物)"
@@ -129,7 +130,7 @@ fi
 # ── 覆盖 ───────────────────────────────────────────────────
 for p in "${PATHS[@]}"; do
   mkdir -p "$SITE_ROOT/$p"
-  ex=(--exclude 'node_modules/' --exclude 'vendor/' --exclude '.git/')
+  ex=(--exclude 'node_modules/' --exclude '.git/')
   for n in "${NEVER[@]}"; do
     case "$n" in "$p"/*) ex+=(--exclude "/${n#"$p"/}") ;; esac
   done

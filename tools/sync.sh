@@ -13,7 +13,8 @@
 #   子项目本体（agent / lib/agent / public/llm-chat）整目录同步；
 #   宿主依赖（lib/*.js、server.js）只做留档，也放在真实相对路径上；
 #   @never 的文件（内部审计记录）两边都不碰。
-# node_modules 与构建产物（public/llm-chat/vendor）不入库。
+# node_modules 不入库；构建产物（public/llm-chat/vendor）**入库**——它让仓库下载即可运行，
+# 见 README「快速开始」。
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -92,8 +93,9 @@ for p in "${PATHS[@]}"; do
   fi
   mkdir -p "$REPO_ROOT/$p"
   # --delete：仓库里多余的文件一并清掉，保证仓库 == 站点当前状态
-  # node_modules / vendor / .git 与 @never 的文件是排除项，不受 --delete 影响
-  ex=(--exclude 'node_modules/' --exclude 'vendor/' --exclude '.git/')
+  # node_modules / .git 与 @never 的文件是排除项，不受 --delete 影响
+  # （vendor 不再排除：预构建界面随仓库分发，sync 会一起刷新它）
+  ex=(--exclude 'node_modules/' --exclude '.git/')
   for n in "${NEVER[@]}"; do
     case "$n" in "$p"/*) ex+=(--exclude "/${n#"$p"/}") ;; esac
   done

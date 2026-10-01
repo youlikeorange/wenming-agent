@@ -2,8 +2,10 @@
 # 不写结尾的斜杠：这样连「指向 node_modules 的软链」也一起忽略
 node_modules
 
-# 构建产物：界面打包结果由 agent/src 构建得出，不入库
-public/llm-chat/vendor/
+# 注：public/llm-chat/vendor/（界面构建产物）**入库**（2026-10-01 起）。
+# 它是「下载即可运行」的前提：仓库里带着预构建的 agent.js / agent.css，
+# clone 下来 `node standalone.js` 就能直接用，不必先 npm install + build。
+# sync.sh / drift.sh / restore.sh 三处都不再排除它，改源码后重新构建即随同步更新。
 
 # 内部审计记录：只留在本机站点里，不对外公开（sync/restore 都会跳过，见 tools/paths.conf）
 agent/AUDIT.md

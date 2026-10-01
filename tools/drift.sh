@@ -7,7 +7,7 @@
 # 输出：每行一处差异（可直接给人看）；无输出 = 一致。
 #
 # 三个细节：
-#   - 排除 node_modules / vendor（依赖与构建产物本来就不入库）；
+#   - 排除 node_modules（依赖不入库）；vendor 参与比较——它是入库的预构建界面；
 #   - 忽略「只有一边存在」但其实是**空目录**的行 —— git 存不了空目录，
 #     刚 clone 出来的仓库不会有 agent/docs/ 这类空壳，不该被当成漂移；
 #   - 路径清单里 @never 的文件（内部审计记录等）两边都不该出现，由调用方通过
@@ -16,7 +16,7 @@ drift_lines() {
   local site="$1" repo="$2"; shift 2
   local raw; raw="$(mktemp)"
   local p line d base name
-  local ex=(-x node_modules -x vendor -x .git)
+  local ex=(-x node_modules -x .git)
   if [ "${DRIFT_EXCLUDES[@]+set}" = set ]; then
     local e
     for e in "${DRIFT_EXCLUDES[@]}"; do ex+=(-x "$e"); done

@@ -4,17 +4,21 @@
 
 **一个能读写文件、执行命令、记住项目的智能体客户端，和一个让它关掉浏览器也能跑完的服务端。**
 
-零框架内核 · React 界面 · 标准 OpenAI / Anthropic 协议 · 服务端托管运行
+零框架内核 · React 界面 · 标准 OpenAI / Anthropic 协议 · 服务端托管运行 · **下载即可运行**
 
 ![Node](https://img.shields.io/badge/Node-%E2%89%A5%2020-339933?logo=nodedotjs&logoColor=white)
-![tests](https://img.shields.io/badge/tests-170%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-198%20passing-brightgreen)
 ![build](https://img.shields.io/badge/build-esbuild%20%C2%B7%20Tailwind%20v4-4b32c3)
 ![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-1f6feb)
 ![runtime](https://img.shields.io/badge/core-zero--framework-orange)
+![standalone](https://img.shields.io/badge/standalone-node%20standalone.js-2ea44f)
 
 </div>
 
 ---
+
+> **下载即可运行**：`git clone` 之后 `node standalone.js`，打开终端里打印的地址就能用
+> （界面产物已随仓库提供，服务端零 npm 依赖、不用 `npm install`）。见 [快速开始](#快速开始)。
 
 ## 这是什么
 
@@ -26,7 +30,9 @@
 - **工具与权限**：文件读写、命令执行、联网搜索；访问级别 + 危险命令闸门（「总是允许」清单）+ 可访问目录白名单。
 - **记忆三层**：全局记忆 / 项目记忆（服务端 Markdown 文件夹）/ 会话记忆，另有自动压缩与用量统计。
 - **技能**：吃主流 `SKILL.md` 结构，可预览（dryRun）后再安装。
-- **工程态度**：内核零框架、可在 Node 下直接单测；状态容器快照语义；170 个用例 + lint / 重复代码 / 模块环三道静态检查，全部离线可跑。
+- **工程态度**：内核零框架、可在 Node 下直接单测；状态容器快照语义；198 个用例 + lint / 重复代码 / 模块环三道静态检查，全部离线可跑。
+- **两种宿主**：可以挂进自带文档站的宿主（`server.js`，仓库里留档），也可以**单独跑**——
+  仓库自带 `standalone.js` 这一份最小宿主（静态服务 + 登录 + `/agent/*`），clone 下来就能起来。
 
 ## 架构
 
@@ -65,41 +71,99 @@ flowchart LR
 ## 目录结构
 
 ```
+standalone.js         ★ 独立运行入口：不需要宿主站点，node standalone.js 直接起服务
 agent/               界面构建工程（改这个子项目的唯一入口）
   src/core/            零框架内核（可在 Node 下单测）
   src/ui/              React 界面：state / features / components
-  test/                node --test 用例（当前 170 个）
+  test/                node --test 用例（当前 198 个）
   build.mjs            esbuild + Tailwind CLI 构建脚本
   README.md            工程说明 + 开发约定（改代码前先读）
   ARCHITECTURE.md      模块清单 · 调用流程 · 必须守住的不变量
 lib/agent/           服务端（/agent/* 的实现）
-public/llm-chat/     页面壳 index.html + 构建产物目录（vendor/ 不入库）
-server.js            宿主入口（留档）：/agent/* 怎么挂上来的
-lib/*.js             宿主依赖留档（见 HOST-DEPS.md）
+public/llm-chat/     页面壳 index.html + 构建产物 vendor/（★ vendor 入库，见下）
+server.js            宿主站点入口（留档）：/agent/* 怎么挂上来的
+lib/*.js             宿主依赖留档（standalone.js 也直接用它们，见 HOST-DEPS.md）
+tools/users.js       ★ 账号管理（独立运行用）：list / add / passwd
 tools/sync.sh        站点 → 仓库：同步 + 提交 + 推送
-tools/restore.sh     仓库 → 站点：回滚（自动备份 + 重建 + 重启提示）
+tools/restore.sh     仓库 → 站点：回滚（自动备份 + 重建 + 提示重启）
 tools/paths.conf     上面两个脚本共用的路径清单
 ```
 
+> `public/llm-chat/vendor/`（界面构建产物，约 850KB）**随仓库分发**：没有它，下载者必须先
+> `npm install && npm run build` 才能看到界面。它由 `agent/src` 构建得出，`tools/sync.sh`
+> 会随站点一起刷新；只想改后端 / 跑服务端的人可以完全不碰 `agent/`。
+
 ## 快速开始
 
-要求 Node ≥ 20 与 npm。
+要求：**Node ≥ 20**（界面产物已随仓库提供，不用 `npm install`）。
+
+### 一、直接跑起来（推荐先走这条）
+
+```bash
+git clone https://github.com/youlikeorange/wenming-agent.git
+cd wenming-agent
+node standalone.js
+```
+
+终端会打印地址与**首次自动创建的管理员密码**（只显示这一次）：
+
+```
+  界面      http://127.0.0.1:4174/llm-chat/
+  数据      ~/.local/share/wenming-agent
+  管理员    admin / xxxxxxxxxxxxx
+```
+
+浏览器打开该地址 → 右上角登录（用上面打印的账号）→ **设置 → 模型** 里填一个服务商
+（OpenAI / Anthropic 协议都行，密钥只存服务端、不下发浏览器）→ 开始对话。
+
+```bash
+node standalone.js --port 8080 --host 0.0.0.0    # 换端口 / 供局域网访问
+node standalone.js --state-dir ./data            # 数据放到指定目录
+node tools/users.js list                         # 账号管理
+node tools/users.js add someone hunter2 --admin  # 建账号（省略密码则随机生成）
+node tools/users.js passwd admin                 # 改密码
+```
+
+独立运行说明：
+- **数据目录**默认 `~/.local/share/wenming-agent`（`STATE_DIR` 可覆盖）。账号、会话、记忆、
+  技能、模型密钥全在这里，格式与挂到文档站时完全一致。
+- **单用户开箱即用**：首次启动建一个 `admin`；没有注册页，加人用 `tools/users.js`。
+- 受 SECURITY 约束的端口默认只监听 `127.0.0.1`；要给别人用请自行加反代 / TLS（`--host 0.0.0.0`
+  会把「用绑定账号执行命令」的能力暴露给能访问该端口的人）。
+- 文件与命令工具的权限 = **你在「设置 → 本机账号」里绑定的那个系统账号的权限**（绑定用 `su`
+  验一次密码，密码不落盘）；不绑定也能用，只是没有文件与命令工具。
+- 联网搜索需要一个 AnySearch CLI（`ANYSEARCH_CLI` 指定脚本路径），没装则该工具报错，其余功能不受影响。
+
+### 二、参与开发（构建界面 + 跑测试）
 
 ```bash
 cd agent
 npm install          # 首次
 npm run build        # 产出 ../public/llm-chat/vendor/{agent.js,agent.css}
-npm test             # node --test：内核 / 协议 / 工具闸门 / 参数 / 状态编排
-npm run lint         # eslint（显式开 no-undef）
+npm test             # node --test：内核 / 协议 / 工具闸门 / 参数 / 状态编排（198 个）
+npm run lint         # eslint（显式开 no-undef，warning 有只减不增的预算）
 npm run dup          # jscpd：重复代码块（有预算上限）
 npm run cycles       # madge：模块环（必须为 0）
 npm run check        # 上面几件一起跑
 ```
 
-> 想直接跑起整个应用，还需要宿主站点（进程入口 `server.js`、文档站账号登录、按账号的
-> `STATE_DIR` 存储）。本仓库是子项目的**源码快照 + 回滚工具**，不含宿主站点本身。
+> 想把这套挂回自带的文档站（含文档/媒体/剧本编辑器），用仓库根的 `server.js` —— 那需要
+> 仓库外的宿主模块（`lib/docs.js`、`lib/media.js`、`lib/api.js` 等），本仓库只有留档。
+> 独立运行不需要它们，入口就是 `standalone.js`。
 
 ## 部署
+
+### 独立部署（standalone.js）
+
+```bash
+# 前台跑
+node standalone.js --host 0.0.0.0 --port 4174
+
+# 后台跑（nohup；日志自己收）
+nohup node standalone.js --host 0.0.0.0 --port 4174 > agent-standalone.log 2>&1 &
+```
+
+### 挂到宿主站点
 
 ```bash
 # 界面：产物落到站点的 public/llm-chat/vendor/，刷新页面即生效
@@ -108,6 +172,9 @@ cd agent && npm run build
 # 服务端：lib/agent/* 的改动必须重启站点才生效
 cd .. && ./down.sh && ./up.sh
 ```
+
+> 两种入口共用同一份数据格式，但**别让两个进程同时写同一个 `STATE_DIR`**：串行锁
+> （`lib/lock.js`）与单窗口互斥（`lib/agent/presence.js`）都在进程内存里，跨进程互相看不见。
 
 ## 版本管理与回滚
 
@@ -133,26 +200,34 @@ git tag -a v2.0.1 -m "稳定版：xxx" && git push origin main --follow-tags
 
 ## 数据边界：仓库里没有什么
 
-用户数据与模型密钥**不在本仓库任何路径下**——它们由站点运行时写在宿主机的 `STATE_DIR`
-（默认 `~/.local/share/wenming-web`，权限 0600）：
+用户数据与模型密钥**不在本仓库任何路径下**——它们由进程运行时写在宿主机的 `STATE_DIR`：
+
+| 部署方式 | `STATE_DIR` 默认值 |
+| --- | --- |
+| 独立运行（`standalone.js`） | `~/.local/share/wenming-agent` |
+| 挂到文档站 | `~/.local/share/wenming-web`（站点与其它子项目共用） |
+
+目录内的结构（权限 0600）：
 
 | 位置 | 内容 |
 | --- | --- |
+| `permissions.json` | 账号（scrypt 口令散列）与登录会话 |
 | `userdata/<账号>/agent.json` | 模型配置（含 API 密钥）/ 参数 / 外观 / 账号绑定 / 可访问目录 |
 | `agent/<账号>/sessions.json` | 会话（含会话记忆与压缩摘要） |
 | `agent/<账号>/memory.json`、`prompts.json` | 全局记忆、提示词登记表与技能 |
-| `agent/<账号>/projects/<id>/`、`archive/` | 项目元信息与项目记忆 Markdown、归档 |
+| `agent/<账号>/projects/<id>/`、`archive/`、`downloads/` | 项目元信息与项目记忆 Markdown、归档、待下载 |
 
-同样不入库的还有：`node_modules`、构建产物 `public/llm-chat/vendor/`、内部审计记录
-（工程文档里提到的 `AUDIT*.md` 是内部资料，只留本机）、每台机器自己的 `tools/site.conf`。
+同样不入库的还有：`node_modules`、内部审计记录（工程文档里提到的 `AUDIT*.md` 是内部资料，
+只留本机）、每台机器自己的 `tools/site.conf`。构建产物 `public/llm-chat/vendor/` 则**入库**
+（下载即可运行的前提，见「目录结构」）。
 
 ## 宿主依赖
 
-`lib/agent/` 依赖宿主站点公共件：`lib/auth.js`、`lib/config.js`、`lib/http.js`、`lib/lock.js`、
-`lib/state.js`、`lib/upstream-http.js`、`lib/userdata.js`，以及 `server.js` 里对 `/agent/*` 的挂载。
-它们按真实相对路径同步在仓库里（这样仓库里的服务端测试能直接跑，也留下「当时线上是什么样」的记录），
-但 `restore.sh` 默认**不写回**——它们是站点公共件，其他子项目也在用。清单与原因见
-[`HOST-DEPS.md`](HOST-DEPS.md)。
+`lib/agent/` 依赖站点公共件：`lib/auth.js`（登录）、`lib/config.js`、`lib/http.js`、`lib/lock.js`、
+`lib/security.js`（路径安全与安全响应头）、`lib/state.js`、`lib/upstream-http.js`、`lib/userdata.js`、
+`lib/zip.js`（可执行文件打包），以及 `server.js` 里对 `/agent/*` 的挂载。它们按真实相对路径同步在
+仓库里——**`standalone.js` 与仓库里的服务端测试都直接 require 它们**；`restore.sh` 默认**不写回**
+站点，因为它们是站点公共件，其他子项目也在用。清单与原因见 [`HOST-DEPS.md`](HOST-DEPS.md)。
 
 ## 开发约定
 
@@ -164,4 +239,4 @@ git tag -a v2.0.1 -m "稳定版：xxx" && git push origin main --follow-tags
 ## 说明
 
 - 仓库未附许可证：代码公开可见，但保留所有权利；要复用请先开 issue 聊。
-- 版本号与 `agent/package.json` 的 `version` 对齐，tag 打在对应快照的提交上（当前 `v2.0.0`）。
+- 版本号与 `agent/package.json` 的 `version` 对齐，tag 打在对应快照的提交上（当前 `v2.1.0`）。
