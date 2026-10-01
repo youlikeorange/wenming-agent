@@ -281,3 +281,9 @@ html[data-fontscale="1.2"] { font-size: 17px; }
 .marker + .marker { border-top: 1px solid color-mix(in srgb, var(--border) 70%, transparent); }
 .marker-sep { display: flex; align-items: center; gap: 0.6rem; font-size: 0.72rem; color: var(--subtle); }
 .marker-sep::before, .marker-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+
+/* 会话大纲（features/SessionOutline.jsx）跳转到的目标消息：整条一闪，告诉用户"到了"。
+   用背景色渐变而不是外发光——消息行是通栏的，外发光会被滚动容器裁掉、只剩上下两条边。 */
+@keyframes ol-flash { 0%, 25% { background-color: color-mix(in srgb, var(--primary) 12%, transparent); } 100% { background-color: transparent; } }
+.ol-target { border-radius: var(--radius-md); animation: ol-flash 1.7s ease-out 1; }
+@media (prefers-reduced-motion: reduce) { .ol-target { animation-duration: 0.5s; } }

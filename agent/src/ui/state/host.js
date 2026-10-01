@@ -223,12 +223,13 @@ export function resolveConfirm(ok, remember) {
    core 的登记表在任何写入路径上都会 notify()，宿主的 Prompts.onChange 就是同一个保存 + 重绘
    （见下面的 wireCore），所以调用方再补一次只是双写；那段"core 不发变更事件"的理由是修复前的旧认知。 */
 
-/** "生成中不许做某事"的统一拦截（新建/切换/清空/归档/回撤…）。
- *  返回 true = 已拦截（并且已经提示）。原先 8 处各自复制这段判断，提示样式还不一致
- *  （会话那 5 处是 info 样式、项目那 3 处是 err 样式），同一个限制看起来像两回事。 */
+/** "这条会话生成中不许做某事"的统一拦截（清空/回撤/删一轮/重新生成…）。
+ *  **判据是"当前会话在跑"**（state.streaming 的含义，2026-10-01 收窄）：别的会话在跑，
+ *  不该挡住你在这条会话里做任何事；新建对话与切换会话也不再受它影响。
+ *  返回 true = 已拦截（并且已经提示）。 */
 export function guardStreaming(what) {
   if (!state.streaming) return false;
-  toast(`正在生成回答：先点「停止」或等这轮结束再${what}`, 'info');
+  toast(`这条对话正在生成回答：先点「停止」或等它结束再${what}`, 'info');
   return true;
 }
 
@@ -250,6 +251,8 @@ export const hooks = {
   onRunDataChanged: null,
   onRunEnded: null,
   onPullLatest: null,
+  /* 待下载目录变了（模型刚把文件交给用户）→ 刷新菜单列表与计数（实现落在 ui/state/downloads.js） */
+  onFilesChanged: null,
   /* 确认框里「以后不再问我」的落点（实现在 ui/state/settings.js，它才持有 setParam）。
      留着空实现是**刻意的**：没接线时勾选框点了也不生效，但绝不会因此放宽任何闸门。 */
   onExecAllow: () => {},
@@ -339,7 +342,7 @@ export function wireCore() {
 }
 
 /* ---- 两个确认框的文案（与服务端闸门配套）---- */
-function askConfirmPlugin(name, args) {
+function askConfirmPlugin(name, args, from) {
   const a = args || {};
   const isCmd = name === 'run_command';
   const isDelete = name === 'delete_path';
@@ -354,41 +357,44 @@ function askConfirmPlugin(name, args) {
   const rule = AgentPolicy.ruleFor(a.command || '') ;
   const canRemember = isCmd && !!rule;
   return askConfirm({
-    title, body, okText: isCmd ? '执行' : isDelete ? '删除' : '写入',
+    title, body, okText: isCmd ? '执行' : isDelete ? '删除' : '写入', from,
     remember: canRemember ? { label: `以后「${rule}」开头的命令直接执行，不再问我` } : undefined,
   });
 }
 
-function askConfirmSkill(action, name, args) {
+function askConfirmSkill(action, name, args, from) {
   const a = args || {};
   if (action === '导入') {
     const items = Array.isArray(a.items) ? a.items : [];
     const body = `从 ${a.path || '(未给路径)'} 安装 ${items.length} 个技能（同名会改写）：\n\n`
       + items.map((s) => `· ${s.name}：${String(s.description || '(未写用途)').slice(0, 70)}［${s.auto === false ? '常驻' : '按需'}］`).join('\n');
-    return askConfirm({ title: '模型要安装技能', body, okText: '安装',
+    return askConfirm({ title: '模型要安装技能', body, okText: '安装', from,
       remember: { label: '以后这类技能改动不用再问我' } });
   }
   const title = action === 'delete' ? '删除技能？' : '模型要写技能';
   const body = action === 'delete'
     ? `技能「${a.name || name}」将被删除，不可恢复。`
     : `名称：${a.name || name || '(未命名)'}\n用途：${a.description || ''}\n加载方式：${a.auto === false ? '常驻注入' : '按需加载'}\n\n--- 正文 ---\n${String(a.text || '').slice(0, 1200)}`;
-  return askConfirm({ title, body, okText: action === 'delete' ? '删除' : '保存', remember: { label: '以后这类技能改动不用再问我' } });
+  return askConfirm({ title, body, okText: action === 'delete' ? '删除' : '保存', from, remember: { label: '以后这类技能改动不用再问我' } });
 }
 
 /** 托管运行的确认（服务端把"要问什么"发过来，文案仍旧用上面那三个确认框：
  *  一处实现、两种跑法，界面不会出现"浏览器里问得详细、服务端问得潦草"）。 */
-export function askRunConfirm(kind, payload) {
+export function askRunConfirm(kind, payload, meta) {
   const p = payload || {};
-  if (kind === 'plugin') return askConfirmPlugin(p.name, p.args);
-  if (kind === 'skill') return askConfirmSkill(p.action, p.name, p.args);
-  if (kind === 'danger') return askDangerGrant(p.hit, p.command);
+  /* meta.session = 这条确认来自哪条会话（多段运行时同时可能有好几条在等），
+     显示在确认框上——否则用户不知道这个框是谁弹的。 */
+  const from = meta && meta.session ? String(meta.session) : '';
+  if (kind === 'plugin') return askConfirmPlugin(p.name, p.args, from);
+  if (kind === 'skill') return askConfirmSkill(p.action, p.name, p.args, from);
+  if (kind === 'danger') return askDangerGrant(p.hit, p.command, from);
   return Promise.resolve({ ok: false });
 }
 
 /** 危险命令的一次性授权窗（票据由服务端签发，人点了才跑） */
-function askDangerGrant(hit, command) {
+function askDangerGrant(hit, command, from) {
   return askConfirm({
-    title: '⚠ 危险命令授权',
+    title: '⚠ 危险命令授权', from,
     body: `这条命令命中了危险操作清单（${hit}）：\n\n$ ${command}\n\n`
       + '它会真的执行；授权只对这一次、这一条命令有效，改一个字符都需要重新授权。',
     okText: '授权执行',

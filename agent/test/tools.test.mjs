@@ -141,6 +141,7 @@ test('deny-check 的完整语义：命中即拦、无票据不放行（toolRunCo
 const AGENT_API = '/agent/tools';
 const BASE_VAL = {
   plugin_fs_on: true, plugin_fs_write: true, plugin_fs_delete: false, plugin_exec_on: true,
+  plugin_deliver_on: true,
   tool_mem_on: true, mem_auto: true, skill_tools_on: true, skill_write_confirm: true, exec_allow: [],
 };
 const valMap = (map) => (k) => Object.assign({}, BASE_VAL, map)[k];
@@ -665,4 +666,58 @@ test('ToolRunner：技能工具（list / use / write / delete 与拒绝路径）
     const x = Prompts.findSkill('demo-x');
     if (x) Prompts.removeSkill(x.id);
   }
+});
+
+/* ============================ 传输文件（待下载） ============================ */
+
+test('★ deliver_file：登录+绑定后注册；开关关掉就不给（与其它插件同一道闸门）', async () => {
+  const { TOOL_DEFAULTS } = await import('../src/core/params.js');
+  assert.equal(TOOL_DEFAULTS.plugin_deliver_on, true, '出厂默认是开的（面板上可以关）');
+  initDefs();
+  const names = namesOf(AgentDefs.pluginToolDefs());
+  assert.ok(names.includes('deliver_file'), '默认开着 → 注册 deliver_file（实际 ' + names.join(',') + '）');
+  initDefs({ val2: valMap({ plugin_deliver_on: false }) });
+  const off = namesOf(AgentDefs.pluginToolDefs());
+  assert.ok(!off.includes('deliver_file'), '关掉「传输文件」→ 不注册');
+  initDefs({ bound: () => false });
+  assert.deepEqual(AgentDefs.pluginToolDefs(), [], '未绑定本机账号 → 连它也不注册（它要读用户的磁盘）');
+  assert.ok(AgentDefs.PLUGIN_TOOL_NAMES.has('deliver_file'), '它在插件族里（走同一套登录/绑定闸门与预算）');
+  assert.ok(!AgentDefs.FS_WRITE_NAMES.includes('deliver_file'), '★ 不是"写文件"工具：不弹写确认框（它只往账号自己的下载目录拷一份）');
+  assert.ok(!AgentDefs.FS_READ_NAMES.includes('deliver_file'), '也不是只读：它会创建文件，要扣 fs 预算');
+  assert.ok(!AgentDefs.CONFIRM_SEQUENTIAL.has('deliver_file'), '无需串行（不碰同一份东西）');
+  assert.equal(AgentDefs.labelOf({ name: 'deliver_file', args: { path: '/tmp/a.md', name: '报告.md' } }), '传给用户：报告.md',
+    '卡片标题是"传给用户：…"（用 name，没有才用 path）');
+});
+
+test('★ asResult 保留可下载文件清单（界面据此画卡片），但只认白名单字段', async () => {
+  /* 工具返回 files → 内核原样带进 trace（run-loop 的 onToolEnd 也会写进实时追踪条） */
+  const result = await import('../src/core/agent.js').then(async (m) => {
+    /* 直接驱动一次 run：假 stream 先给一个工具调用，再给收尾正文 */
+    const calls = [];
+    const out = await m.Agent.run({
+      maxRounds: 3,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ type: 'function', function: { name: 'deliver_file', description: '', parameters: { type: 'object', properties: {} } } }],
+      opts: {},
+      signal: null,
+      stream: async function* () {
+        if (!calls.length) {
+          calls.push(1);
+          yield { type: 'tool_calls', calls: [{ id: 'c1', name: 'deliver_file', args: { path: '/tmp/a.md' } }] };
+        } else {
+          yield { type: 'content', text: '好了' };
+        }
+      },
+      runTool: async () => ({
+        ok: true, note: '已放入待下载', text: '已放入',
+        files: [{ name: '报告.md', size: 12, exec: false, packaged: false, source: '/tmp/a.md', 恶意字段: 'x' }],
+      }),
+      transformContext: (msgs) => msgs,
+      hooks: {},
+    });
+    return out.trace;
+  });
+  assert.equal(result.length, 1, '一次工具调用一条追踪记录');
+  assert.equal(result[0].files && result[0].files[0].name, '报告.md', '★ files 要活着（实际 ' + JSON.stringify(result[0].files) + '）');
+  assert.equal(result[0].files[0].恶意字段, undefined, '白名单外的字段一律丢掉（工具参数不可信）');
 });

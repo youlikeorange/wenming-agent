@@ -26,6 +26,8 @@ export function ConfirmDialog() {
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle className={c.danger ? 'text-destructive' : ''}>{c.title || '确认'}</DialogTitle>
+          {/* 多会话并行时可能同时有好几条在等你点头：写清是**哪条会话**弹的框 */}
+          {c.from ? <p className="text-xs text-muted-foreground">来自会话「{c.from}」</p> : null}
         </DialogHeader>
         <pre className="max-h-[46vh] overflow-auto whitespace-pre-wrap rounded-md border border-border bg-muted/40 p-3 font-mono text-xs leading-relaxed">
           {c.body}

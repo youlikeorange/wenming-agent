@@ -6,6 +6,7 @@
  *  （而"进行中"恰恰是会被 onToolEnd 覆写成真实备注的字段），审计把它收敛成结构化字段：
  *
  *    kind  : 'tool'   工具调用（默认）
+ *            'sub'    子智能体（spawn_agent 起的那一段：过程实时显示，结论回到主对话）
  *            'notice' 提示条（内核 onNotice 打的：正文里的调用已识别 / 回答被截断 / 轮次用尽…）
  *            'steer'  插话（用户在生成中输入）
  *            'compact' 压缩（上下文压缩的中间态）
@@ -15,7 +16,7 @@
  *  这样界面代码里再也不需要出现 `note === '进行中'` 这种判断。
  */
 
-const KINDS = new Set(['tool', 'notice', 'steer', 'compact']);
+const KINDS = new Set(['tool', 'sub', 'notice', 'steer', 'compact']);
 
 /** 条目的类别（缺省 tool；旧数据没有 kind 字段） */
 export const traceKind = (t) => (t && KINDS.has(t.kind) ? t.kind : 'tool');

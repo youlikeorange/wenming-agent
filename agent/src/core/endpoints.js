@@ -48,11 +48,17 @@ export const EP = {
   /* 托管运行：Agent 循环跑在服务端（关掉浏览器也不中断），界面只是观众。
      这些端点与其它 /agent/* 同一套登录与单窗口规则，但**运行本体不受窗口影响**。 */
   runStart: `${BASE}/run/start`,           // POST { sessionId, text, providerId?, history? } → { runId }
-  runEvents: `${BASE}/run/events`,         // GET  ?id= → SSE（先回放，再续播）
-  runState: `${BASE}/run/state`,           // GET  ?sessionId= → { run|null, busy|null }
+  runEvents: `${BASE}/run/events`,         // GET  ?id= → SSE（先回放，再续播）——单段运行用（诊断/兼容）
+  runState: `${BASE}/run/state`,           // GET  ?sessionId= → { run|null, runs:[…] }
   runStop: `${BASE}/run/stop`,             // POST { id }
   runSteer: `${BASE}/run/steer`,           // POST { id, text }（生成中插话）
   runConfirm: `${BASE}/run/confirm`,       // POST { id, confirmId, ok, remember }
+  runHub: `${BASE}/run/hub`,               // GET  → SSE：**本账号全部运行**的事件（统一口，前端只连这一条）
+  /* 待下载目录（传输文件插件）：每个账号一个目录，界面菜单与会话卡片都从这里取 */
+  files: `${BASE}/files`,                  // GET  → { dir, entries:[{name,size,mtime,exec,packaged,downloadName}] }
+  filesDownload: `${BASE}/files/download`, // GET  ?name= → 文件字节（可执行文件自动改发 zip）
+  filesDelete: `${BASE}/files/delete`,     // POST { name }
+  runSubagent: `${BASE}/run/subagent`,     // GET  ?id=<runId>&sub=<subId> → 子智能体的完整转录
   // 文档站账号（登录/登出/会话）复用宿主既有端点，与文档编辑器同源
   login: '/api/login',
   logout: '/api/logout',

@@ -97,6 +97,9 @@ export function applyServerData(d, opts = {}) {
   });
   applyAppearance();
   updateCtx();
+  /* 会话对象被换成服务端那份了：还在跑的那几条运行要把"正在生成"重新认到新对象上
+     （事件按 liveId 寻址，认领这一步在 run.js 里）。 */
+  Run.rehydrate();
 }
 
 /* ============================ 与服务端对齐（唯一真源=服务端） ============================
@@ -152,7 +155,8 @@ export function refreshLightSoon(delay = 1200) {
   if (lightTimer) return;
   lightTimer = setTimeout(async () => {
     lightTimer = null;
-    if (!StoreApi.user || state.streaming) return;
+    const live = state.runs[state.activeSessId];
+    if (!StoreApi.user || (live && !live.settled)) return;   // 当前这条在流式：先不拉（避免换掉直播对象）
     if (!(await whenWritesSettled())) return;
     const d = await StoreApi.pullLight();
     if (d) await applyServerLight(d, String(state.currentProjectId || ''));
@@ -167,17 +171,20 @@ const userKey = () => (StoreApi.user ? String(StoreApi.user.username || '') : ''
  *   · 又开了一轮（state.streaming=true）：刚乐观插入的提问/占位会被旧快照换掉；
  *   · 用户切了会话（onlyIfSession 之外）；
  *   · 换了身份（登出/换账号）：上一账号的 sessions/projects 不能灌进已登出的界面。 */
-function canApply(who, onlyIfSession) {
-  if (state.streaming) return false;
+function canApply(who, onlyIfSession, force) {
+  /* 正在流式的会话**不能**被服务端快照盖掉（会把它那条直播消息换回半截快照）。
+     判据是"**这条**会话在跑"，不是 state.streaming —— 多会话并行时，
+     别的会话在跑不该挡住这条会话的刷新（2026-10-01 起可以同时跑好几条）。 */
+  if (!force && state.runs[state.activeSessId] && !state.runs[state.activeSessId].settled) return false;
   if (onlyIfSession && state.activeSessId !== onlyIfSession) return false;
   return userKey() === who;
 }
 
-export async function refreshAll({ onlyIfSession } = {}) {
+export async function refreshAll({ onlyIfSession, force } = {}) {
   const who = userKey();
   if (!who || !(await whenWritesSettled())) return false;
   const d = await StoreApi.pull();
-  if (!d || !canApply(who, onlyIfSession)) return false;
+  if (!d || !canApply(who, onlyIfSession, force)) return false;
   applyServerData(d, { preferSess: onlyIfSession });
   /* 全量数据里没有项目记忆（唯一取数路径是 /agent/projects/memory）：紧接着取回来。
      这一轮可能是模型刚写完记忆（data_changed / 一轮结束），面板显示的就是服务端那份。 */
@@ -191,7 +198,8 @@ export async function refreshAll({ onlyIfSession } = {}) {
 export function refreshAllSoon(sessionId, delay = 1500) {
   setTimeout(async () => {
     if (!sessionId || state.activeSessId !== sessionId) return;
-    if (state.streaming) return;                 // 又开了一轮：别拿快照去盖正在流的消息
+    const r = state.runs[sessionId];
+    if (r && !r.settled) return;                 // 这条又开了一轮：别拿快照去盖正在流的消息
     await refreshAll({ onlyIfSession: sessionId }).catch(() => { /* 下次载入还会拉 */ });
   }, delay);
 }
@@ -199,16 +207,19 @@ export function refreshAllSoon(sessionId, delay = 1500) {
 /* 托管运行（ui/state/run.js）通过 host 的钩子回调这里：它不直接 import 本文件，避免模块环 */
 hooks.onRunDataChanged = () => refreshLightSoon();
 hooks.onRunEnded = (sessionId) => {
-  /* **先把这一轮写回会话对象**，再排"以服务端为准"的整份重拉。
-     为什么不能只靠重拉：它是 1.5 秒后的延迟动作，用户在窗口里切走会话、或那次拉取失败时
-     会被跳过（见 refreshAllSoon 的三个 return），而会话对象还停在**运行前**的快照——
-     下次从它切回来，界面上看不到刚跑完的那一轮；此时再发一条，服务端按客户端上交的
-     history 整份覆盖，那一轮就永久没了（2026-10-01 审计实测的数据丢失路径）。
-     写回用的是当前的 state.history（SSE 事件已把最终内容都写进那条消息了）。 */
-  persistSession(sessionId);
-  refreshAllSoon(sessionId);
+  /* **不再由客户端把这一轮写回会话**：运行在服务端跑，落盘也在服务端做完了
+     （lib/agent/run-loop.js 的 finish 是"写完再广播 end"），事件流已经把最终内容写进
+     会话对象了。客户端再写一次只会有两种结果：要么内容一模一样（白写一次），
+     要么客户端那份落后（用它覆盖服务端反而丢东西）。
+     要拉的是"只有服务端才知道"的东西：标题/摘要/会话记忆（end 事件已带回）、
+     面板数据（记忆/提示词/技能，模型可能刚写过）——所以下面只重拉面板 + 当前会话。 */
+  refreshLightSoon();
+  if (state.activeSessId === sessionId) refreshAllSoon(sessionId);
 };
 hooks.onPullLatest = (sessionId) => refreshAll({ onlyIfSession: sessionId });
+/* 掉线期间某条会话跑完了（hub 重连时快照里已经没有它）：本地那份正文可能不完整，
+   以服务端落盘的那份为准整份重拉（force：当前会话正在流式也要拉，拉完 rehydrate 会接回去）。 */
+hooks.onSessionStale = () => { refreshAll({ force: true }).catch(() => { /* 下次载入还会拉 */ }); };
 
 /** 主题/强调色/字号/密度 → <html> 上的 data 属性（CSS 只认属性，不认 JS） */
 export function applyAppearance() {
@@ -290,7 +301,7 @@ export function ensureSession() {
 }
 
 export function newSession(opts) {
-  if (guardStreaming('新建对话')) return;
+  /* 新建对话**不**受别的会话在跑影响（多会话并行的基本体验：一边跑一边开新话题） */
   /* 「新建」必须**真的换一条会话**（换 id）：旧实现拿 ensureSession() 的返回值当新会话，
      那函数在当前会话存在时原样返回它 —— 于是"新建"只是把当前会话挪到列表最前、界面上清空，
      旧消息仍留在 s.msgs 里，下一次 persistSession 才被新内容覆盖掉。两个后果：
@@ -312,14 +323,17 @@ export function newSession(opts) {
   Prompts.clearLoaded();
   Memory.clearSession();
   AgentContext.invalidateCompaction();
+  Run.syncActive();
   updateCtx();
 }
 
 export function selectSession(id) {
-  if (guardStreaming('切换会话')) return;
+  /* **生成中也能切会话**（多会话并行的一半就在这里）：统一事件口是一条 SSE 看全部，
+     切走只是换个显示对象，服务端那几条运行照跑，界面照样实时更新。
+     要拦的是"改这条会话内容"的动作（清空/回撤/归档），它们各自有 guardStreaming。 */
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
-  Run.detach();                     // 换会话 = 换一条观看流（运行本体不受影响）
+  Run.detach();                     // 兼容旧语义（统一口下是空操作）
   patch({ activeSessId: id, history: (s.msgs || []).slice() });
   Prompts.clearLoaded();
   /* 只换"会话记忆"那一段：全局与项目记忆由各自的来源决定，不随会话变。
@@ -346,6 +360,7 @@ export function selectSession(id) {
      否则会出现"我在看 B 项目的对话，侧栏/记忆面板却还是 A 项目"——
      而服务端跑这一轮时用的是**会话**的项目记忆，两边就对不上了（实测复现过）。 */
   syncProjectWithSession(s);
+  Run.syncActive();                 // 这条会话在跑吗？——决定 Composer 显示"停止"还是"发送"
 }
 
 export function renameSession(id, title) {
@@ -359,7 +374,8 @@ export function renameSession(id, title) {
 /** 归档一个对话（侧栏的按钮，原先是"删除"）：搬进账号目录里的归档区，**不丢任何内容**，
  *  随时可以在「设置 → 存档」里恢复或彻底删除。所以这里不问确认——可逆的操作不该拦人。 */
 export async function archiveSession(id) {
-  if (guardStreaming('归档')) return;
+  /* 只拦"正在跑的那条会话"：归档会让服务端把它搬走，而运行还在往里写（会写回一个已归档的会话） */
+  if (Run.isRunning(id)) { toast('这条对话正在生成回答：先点「停止」或等它结束再归档', 'info'); return; }
   const s = state.sessions.find((x) => x.id === id);
   const wasActive = state.activeSessId === id;
   const sessions = state.sessions.filter((x) => x.id !== id);
@@ -483,9 +499,16 @@ function startTurn(p, text) {
     role: 'assistant', content: '', thinking: '', stats: null, trace: [],
     injected, wallMs: 0, streaming: true,
   };
-  patch({ history: before.concat([{ id: newMsgId(), role: 'user', content: text }, live]) });
-  /* 这里**不落盘**：会话由服务端那一段运行负责写（它一接手就先写一次）。
-     两边都写会在防抖窗口里互相覆盖，也修不掉"同一条提问写两遍"的根。 */
+  /* 这条提问与占位**同时写进会话对象与 history**（两边是同一批对象）：
+     · history 是界面正在画的那份；会话对象是"切走再切回来 / 下一次发送的 before"那份。
+       只写 history 的话，切到别的会话再切回来就看不到刚发的这一轮（实测踩到：
+       新建对话甚至认不出"当前会话已经有消息了"，于是"新建"变成原地清屏）。
+     · 服务端仍会按 run.history 整份落盘（下面**不落盘**：两边都写会在防抖窗口里互相覆盖，
+       也修不掉"同一条提问写两遍"的根）。 */
+  const next = before.concat([{ id: newMsgId(), role: 'user', content: text }, live]);
+  const sess = curSess();
+  if (sess) sess.msgs = next;
+  patch({ history: next });
   return { p, text, defs, injected, live, p0, before, t0: (globalThis.performance || Date).now() };
 }
 

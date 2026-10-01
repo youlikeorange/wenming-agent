@@ -19,15 +19,19 @@ export const state = {
   projects: [],            // 项目清单（每个项目 = 一个根目录 + 一份项目记忆文件夹）
   currentProjectId: '',    // 当前项目（'' = 不归属任何项目）；会话默认归属它
   history: [],             // 当前会话的消息（含 thinking/trace/injected）
-  streaming: false,        // 是否正在生成
-  steering: 0,             // 待消费的插话条数（界面提示用）
+  runs: {},                // 正在跑的托管运行：sessionId → { runId, liveId, status, title, startedAt, steering, error }
+                           // —— **多会话并行**就靠它：每条会话各有一条正在生成的运行，互不影响
+  streaming: false,        // **当前会话**是否正在生成（= runs[activeSessId] 有值；给 Composer/停止按钮用）
+  steering: 0,             // 当前会话待消费的插话条数（界面提示用）
+  hub: { connected: false, error: '' },   // 统一事件口（一条 SSE 收全部会话的运行事件）的连接状态
+  downloads: { open: false, entries: [], dir: '', loading: false, error: '' },  // 「📥 待下载」目录（传输文件插件）
   status: { connected: false, checking: false, models: [], error: '', model: '' },
   agentStatus: null,       // /agent/tools/status：绑定、白名单、上限、危险清单
   ctx: { used: 0, limit: 32768, pct: 0, state: 'ok' },   // 用量环
   presence: { active: true, owner: null, enforce: true },
   drawer: { open: false, section: 'appearance' },
   confirm: null,           // 当前确认框（见 askConfirm）
-  promptDrafts: {},        // 提示词登记表的未应用草稿（id → 文本；点「应用」才写进登记表）
+  promptDrafts: {},        // 提示词登记表的未应用草稿（id → 补丁 {text?, name?, description?, auto?}；点「应用」才写进登记表）
   draft: '',               // 输入框草稿（Composer 是文本源，这里存一份供 token 估算与插话回填）
   confirmQueue: [],        // 排队中的确认框（同一时刻只显示一个）
   requestOptions: null,    // 本轮请求参数（Agent 循环与压缩读它；send() 每次重建）

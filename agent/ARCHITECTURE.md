@@ -1,7 +1,8 @@
 # 智能体 Agent · 模块与调用流程（2026-10-01）
 
 这份文档回答两个问题：**每个模块被谁调用、它自己又做了什么**，以及**一条消息从输入框到落盘的完整路径**。
-配套文档：`README.md`（怎么用）、`AUDIT.md`（历轮审计与修复）、仓库根 `PROJECT-STRUCTURE.md`（全站结构）。
+配套文档：`README.md`（怎么用）、`docs/MODULE-MAP.md`（模块/端点/数据地图：查端点、查数据落在哪个文件、
+查"改某个功能动哪几个文件"用那份）、`AUDIT.md`（历轮审计与修复）、仓库根 `PROJECT-STRUCTURE.md`（全站结构）。
 
 阅读顺序建议：先看第 1 节的图与第 2 节的分层，再按第 3 节走一遍主流程（这是最常走的一条路），
 第 4 节是"一轮循环内部"的细节，第 5 节是其余入口，第 6 节是逐模块清单（查字典用），
@@ -78,7 +79,7 @@ Composer.submit
        │    · 用户消息 + 助手占位（各带稳定 id）立刻进 state.history
        └─ Run.startRun({sessionId, text, providerId, live, before, localEdits})
             ├─ POST /agent/run/start
-            └─ subscribe(runId)  ← SSE：GET /agent/run/events?id=
+            └─ ensureHub()        ← SSE：GET /agent/run/hub（**一条流看全部会话**）
 ```
 
 服务端一侧：
@@ -86,16 +87,17 @@ Composer.submit
 ```
 run-http.handleRun  /start
   └─ run.startRun(req)
-       ├─ reg.activeOf() 有值 → 409（同一时刻只允许一个托管运行）
+       ├─ gateErrors()                     三道闸：这条会话已在跑 → 409；账号/全局并发上限 → 429
        ├─ store.readSessions → 找会话；没落盘就按 id 现造（客户端防抖窗口）
        ├─ settings.read → 取服务商；没有 → 400
-       ├─ core()                           加载 core + 装进程内桥 + 装直连上游（进程内一次）
+       ├─ createCoreContext()              造**本段运行专用**的 core 实例（登记表/记忆/工具/上下文）
        ├─ Sessions.reconcileHistory(...)   客户端那份落后一轮时用服务端那份（见第 8 节）
        ├─ Sessions.trimTrailingQuestion()  老客户端把提问也放进来时去重
-       ├─ reg.create(run)                  登记运行（history/live/abort/事件日志/确认表）
+       ├─ reg.create(run)                  登记运行（history/live/core/abort/事件日志/确认表）
        ├─ run.history.push(用户消息, live) 本轮提问只追加这一次
        ├─ loop.persist(run, true)          **先落盘再返回**（关掉浏览器也找得回"我问过什么"）
-       └─ loop.execute(run, req)           后台跑（不 await）
+       ├─ events.emit(run_started, liveId) 向统一事件口宣告这一段开始了（客户端据此认领消息）
+       └─ loop.execute(run, req)           后台跑（不 await）——**可以同时跑好几段**
 ```
 
 浏览器一侧继续：
@@ -205,14 +207,17 @@ finish(run, out, err)
 | `tools/index.js` + `tools/fs.js` + `tools/exec.js` | 文件与命令工具 | run-bridge / index | 每个工具先过 roots + osaccess + deny；命令走 `spawnSpec`（以绑定身份执行） |
 | `skills.js` | 技能安装（SKILL.md） | index / run-bridge | `planImport` 解析预览，`applyImport` 在 `store.updatePrompts` 锁内落盘 |
 | `run.js` | 托管运行**编排**（公开 API） | run-http / 测试 | `startRun`（校验→对账→登记→先落盘→后台跑）、`attach/answerConfirm/stopRun/steer/stateOf/busyOf`（**全部按 account 过滤**）；注册登出即掐断 |
-| `run-core.js` | core 装配（进程内单例） | run.js / run-loop | 动态 import core（12 个模块）→ `installBridge()` → `transport.setTransport(nodeChat/nodeModels)` |
-| `run-registry.js` | 运行登记表与生命周期 | run.js / run-loop / run-http | `create/get/activeOf/busy/busyOf/stateOf/stopRun/release`；插话队列 `steer/markSteer/steerPending`；**全局只允许一个运行** |
-| `run-events.js` | 事件日志与 SSE | run-registry / run-loop / run-confirm | `emit`（进日志 + 推订阅者 + 超上限丢尾部窗口）、`applyToLive`、`attach`（回放→续播→重发未答确认）、`notifyUi` |
+| `run-core.js` | core 装配：静态层共用 + **每段运行一份实例** | run.js / run-loop | `modules()`（动态 import + `installBridge()` + `transport.setTransport`，进程内一次）、`createCoreContext()`（`createPrompts/Memory/AgentDefs/AgentContext/ToolRunner` 现造） |
+| `run-registry.js` | 运行登记表与生命周期 | run.js / run-loop / run-http | `create/get/listOf/objectsOf/stateOf/capacity/stopRun/release`；插话队列 `steer/markSteer/steerPending`；**可同时跑多段**（一条会话一段 + 账号上限 `AGENT_RUNS_PER_ACCOUNT`(3) + 全局上限 `AGENT_RUNS_TOTAL`(8)）；`settled` = 落盘完成（不是 status） |
+| `run-events.js` | 事件日志 + 单运行 SSE + **账号统一事件口** | run-registry / run-loop / run-confirm | `emit`（进日志 + 推本运行的订阅者 + 推账号 hub）、`applyToLive`、`attach`（回放→续播→重发未答确认）、`hubAttach`（快照 + 每段回放 + 续播，事件带 `runId/sessionId/liveId`）、`notifyUi` |
+| `files.js`（服务端 `lib/agent/`） | **待下载目录**（每账号一个）+ 下载链接 + 可执行文件打包 | index（路由）/ tools/deliver | `list/publish/downloadOf/remove`；文件名白名单 + realpath 复核（挡穿越与符号链接）；可执行文件发布时打包、下载时再兜一道；单文件/总量上限 |
+| `tools/deliver.js` | `deliver_file` 工具（把产出物交给用户） | tools/index 的 /call 与 run-bridge | 与 `read_file` **同一套闸门**（roots + 权限 + 解锁）；返回 `files`（内核带进追踪条 → 界面画下载卡片） |
+| `run-subagent.js` | **子智能体**（spawn_agent） | run-loop（注入 ToolRunner） | 自己一段上下文（新 `AgentContext`）+ 默认**只读**工具集（`AgentDefs.subagentToolDefsFor`，永不含 spawn_agent）+ 独立预算；并发闸按 run 排队；过程进事件流（`sub_*`）、结论作为工具结果回主对话、完整转录留在 `run.subs`（`GET /agent/run/subagent`） |
 | `run-confirm.js` | 人工闸门 | run-loop / run.js | `ask`（Map 多槽位、超时按拒绝）、`answerConfirm`（只结算自己的 id） |
 | `run-loop.js` | 循环本体 | run.js | `execute`（灌账号数据 → init 各 core 模块 → 注册 onChange → 跑 `Agent.run` → finish）、`persist`（1.5s 节流落盘）、`finish`（写完再广播 end）、`loopHooks`、`roundBudget` |
 | `run-bridge.js` | 进程内端点桥 | run-loop（装一次） | 把 core 的 HTTP 调用接回真实处理函数（形状不变）；**每次工具执行前重新取 actor**；未覆盖路径一律 501（绝不静默成功） |
 | `run-upstream.js` | 托管运行的上游一跳 | run-core 传入 transport | 用 `lib/upstream-http` + 同一套出口校验直连上游，把 Node 响应包成 web `Response` |
-| `run-http.js` | `/agent/run/*` 端点 | index | start/events/state/stop/steer/confirm；events 与 confirm 都把 account 交给 run.js 过滤 |
+| `run-http.js` | `/agent/run/*` 端点 | index | start/**hub**/events/state/**subagent**/stop/steer/confirm；每个入口都把 account 交给 run.js 过滤 |
 | `limits.js` / `sanitize.js` | 硬上限与收敛 / 标识符与字段清洗 | 全体 | `effLimits`（只能收紧）、`makeGate`（并发+频率闸门）、`ACCOUNT_RE/PROJECT_RE/ENTRY_ID_RE` |
 
 ### 6.2 共享 core `agent/src/core/`
@@ -264,17 +269,27 @@ finish(run, out, err)
 
 ## 8. 必须守住的不变量（每条都对应一次真实故障）
 
-1. **同一时刻只允许一个托管运行**（core 的登记表是模块级单例）；对外只暴露本账号那一段（`busyOf/stateOf/get(id, account)`）。
-2. **`onChange` 必须退订**：托管运行按"一次运行注册一次"用，收尾不退订就会跨账号覆盖写数据。
-3. **落盘写完再广播 `end`**（否则客户端重拉拿到半截快照）。
-4. **客户端上交的历史与服务端那份要对账**：客户端那份是服务端那份的严格前缀时用服务端的（它落后了）；
+1. **可以同时跑多段运行，但有三道闸**：一条会话同时只有一段（两段会互相覆盖历史）、每账号 ≤ `AGENT_RUNS_PER_ACCOUNT`、
+   全进程 ≤ `AGENT_RUNS_TOTAL`；对外只暴露本账号那几段（`listOf/stateOf/get(id, account)`）。
+   **每段运行必须持有自己的 core 实例**（`createCoreContext()`）——core 的登记表/记忆/上下文管理都是**实例内**状态，
+   共用一份就会串账号数据（2026-10-01 之前正是靠"全局只允许一段"绕开这件事）。
+2. **统一事件口只连一条**（`/agent/run/hub`）：事件带 `runId/sessionId/liveId`，客户端据此把每条事件写回**它那条会话**的
+   助手消息；`run_started` 必须发（服务端在 POST 响应之前就写它），否则客户端认不出服务端那条消息、每个事件冒一条气泡。
+3. **`settled`（落盘完成）才是"跑完了"的判据**，`status` 只是显示态——按 status 判会读到半截快照。
+4. **`onChange` 必须退订**：托管运行按"一次运行注册一次"用，收尾不退订就会跨账号覆盖写数据。
+5. **落盘写完再广播 `end`**（否则客户端重拉拿到半截快照）。
+6. **客户端上交的历史与服务端那份要对账**：客户端那份是服务端那份的严格前缀时用服务端的（它落后了）；
    本地有未落盘编辑时以客户端为准。
-5. **本轮提问只追加一次**：`run.history` 加了就不再传给 `buildMessages`。
-6. **确认闸门无人值守按拒绝**；确认按 id 结算，不认别人的。
-7. **工具执行前重新取身份**（登出/解绑/上锁立即生效）；登出还会掐断在途运行。
-8. **清单类参数（exec_allow）落盘是数组**，读取端容忍旧字符串；写法统一走 `normalizeValue`。
-9. **2xx 但正文不是 JSON = 错误**；`pull()` 还要校验形状（空对象不能当成"服务端没有数据"）。
-10. **消息带稳定 id**（界面 key）；下标当 key 会在删除/回撤后错位。
-11. **压缩关掉时裁剪只作用于请求视图**，会话原文不动，且对齐到 user 边界（否则上游 400）。
-12. **Anthropic 扩展思考必须原样回传**（thinking + signature），落盘白名单里要有这两个字段。
-13. **服务端改动要重启站点才生效**；前端产物重建后刷新即可（`npm run build`）。
+7. **本轮提问只追加一次**：`run.history` 加了就不再传给 `buildMessages`。
+8. **确认闸门无人值守按拒绝**；确认按 id 结算，不认别人的。
+9. **工具执行前重新取身份**（登出/解绑/上锁立即生效）；登出还会掐断在途运行。
+10. **清单类参数（exec_allow）落盘是数组**，读取端容忍旧字符串；写法统一走 `normalizeValue`。
+11. **2xx 但正文不是 JSON = 错误**；`pull()` 还要校验形状（空对象不能当成"服务端没有数据"）。
+12. **消息带稳定 id**（界面 key）；下标当 key 会在删除/回撤后错位。
+13. **压缩关掉时裁剪只作用于请求视图**，会话原文不动，且对齐到 user 边界（否则上游 400）。
+14. **Anthropic 扩展思考必须原样回传**（thinking + signature），落盘白名单里要有这两个字段。
+15. **上游报错要把上游自己说的话带上**（`errorText`：只有"HTTP 401"用户无从修起），
+   且 `msg.error` **必须落盘**（`sanitizeMsg` 的白名单里要有它）——刷新一次错误就消失等于没反映出来。
+16. **子智能体不许递归**（工具集里永不含 spawn_agent）、默认只读（写权限要面板开关 + 工具参数双开）、
+   结论必须作为**工具结果**回主对话（过程走事件流，完整转录留在运行里）。
+17. **服务端改动要重启站点才生效**；前端产物重建后刷新即可（`npm run build`）。

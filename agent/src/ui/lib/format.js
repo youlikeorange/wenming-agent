@@ -25,9 +25,12 @@ export function fmtChars(s) {
 }
 
 /** 字节数：说"磁盘/传输上限多大"（面板上的参数值本身是 KB，调用方先乘 1024） */
+/** 字节 → 人读的字符串。**小于 1KB 时按字节显示**：待下载目录里的小文件
+ *  （几百字节的 md/脚本）以前一律显示成"0 KB"，看着像空文件。 */
 export function fmtBytes(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return '-';
+  if (v < 1024) return Math.round(v) + ' B';
   return v >= 1024 * 1024 ? (v / 1024 / 1024).toFixed(0) + ' MB' : Math.round(v / 1024) + ' KB';
 }
 
@@ -59,6 +62,29 @@ export function timeAgo(ts) {
 
 /** 完整时间（title 提示用） */
 export const fullTime = (ts) => (Number(ts) ? new Date(Number(ts)).toLocaleString() : '');
+
+/** 一句提问的「名字」（右侧会话大纲的悬停标题）。
+ *  输入框里可以是 Markdown：直接显示会把 ``` / ** / "- " 这些记号带进标题，
+ *  所以取第一条有效行、剥掉行首记号与行内强调、压平空白；超长按**码点**截断（不劈开 emoji）。 */
+export function outlineLabel(text, max = 60) {
+  const lines = String(text || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const head = lines.find((l) => !l.startsWith('```')) || lines[0] || '';
+  const plain = head
+    .replace(/^#{1,6}\s+/, '')                        // # 标题
+    .replace(/^>\s?/, '')                             // > 引用
+    .replace(/^(?:[-*+]|\d{1,3}[.)])\s+/, '')         // - / * / 1. / 2) 列表记号
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')         // 图片 → alt 文字
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')          // 链接 → 链接文字
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/~~(.+?)~~/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`([^`]*)`/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const chars = [...plain];
+  return chars.length > max ? chars.slice(0, max).join('') + '…' : plain;
+}
 
 /** 一轮的元信息：tok/s · tokens · prompt · 耗时（拿不到 usage 时按字数估算 tokens） */
 /** 一轮的元信息：tok/s · tokens · prompt · 耗时（拿不到 usage 时按字数估算 tokens） */

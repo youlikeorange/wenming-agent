@@ -61,14 +61,31 @@ function Thinking({ text, streaming }) {
   );
 }
 
-/** 元信息 + 未跑完 / 空回答的说明（元信息只用一行小字，不做徽章） */
-function Meta({ msg, stale }) {
+/** 元信息 + 未跑完 / 空回答的说明（元信息只用一行小字，不做徽章）
+ *  **失败要看得见**（2026-10-01）：模型/上游出错时（401、429、断网、上下文超限…）服务端会把
+ *  错误挂在这条消息上（msg.error），这里画成一个带边框的错误块并把「重试这一轮」放在手边——
+ *  旧实现只有一行红字，用户最容易的反应是"它卡住了"而不是"它失败了"。 */
+function Meta({ msg, stale, canRetry, busy }) {
   const parts = statsParts(msg.stats, msg.wallMs, msg.content);
   const empty = !msg.streaming && !stale && !msg.content && !msg.thinking
     && !(msg.trace || []).length && !msg.error;
   return (
     <>
-      {msg.error ? <p className="text-xs leading-relaxed text-destructive">{msg.error}</p> : null}
+      {msg.error ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+          <p className="text-xs leading-relaxed text-destructive">{msg.error}</p>
+          {canRetry ? (
+            <Button
+              variant="outline" size="sm" className="mt-1.5 h-6 gap-1 px-2 text-[11px]"
+              disabled={busy}
+              title={busy ? '生成中：先等这一轮结束' : '按原提问重新问一次'}
+              onClick={() => regenerateLast()}
+            >
+              <RefreshCw className="size-3.5" />重试这一轮
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {stale ? (
         <p className="text-[11px] leading-relaxed text-warning">
           {msg.content ? '这一轮没有跑完（生成被中断），下面是已经生成的部分。' : '这一轮没有跑完（生成被中断），没有内容保存下来，可以重新提问。'}
@@ -169,7 +186,7 @@ function Message({ msg, index, stale, isLastRound, busy }) {
 
   if (isUser) {
     return (
-      <div className="group/msg flex flex-col items-end gap-1">
+      <div className="group/msg flex flex-col items-end gap-1" data-mi={index}>
         <div
           ref={bodyRef}
           className="md w-fit max-w-[80%] rounded-2xl bg-user-bubble px-3.5 py-2.5 text-user-bubble-foreground [&_.codeblock]:text-foreground [&_.md-code]:text-foreground"
@@ -184,7 +201,7 @@ function Message({ msg, index, stale, isLastRound, busy }) {
   const pending = !!msg.streaming && !msg.content && !msg.thinking;
 
   return (
-    <div className="group/msg flex items-start gap-2.5">
+    <div className="group/msg flex items-start gap-2.5" data-mi={index}>
       <span className="mt-0.5 grid size-7 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground" title="助手">
         <Bot className="size-4" />
       </span>
@@ -216,7 +233,7 @@ function Message({ msg, index, stale, isLastRound, busy }) {
             正文过长（{raw.length} 字），界面只渲染了前 {MAX_RENDER} 字；点「复制」取完整全文。
           </p>
         ) : null}
-        <Meta msg={msg} stale={stale} />
+        <Meta msg={msg} stale={stale} canRetry={isLastRound} busy={busy} />
         <Actions>{actions}</Actions>
       </div>
     </div>
@@ -238,6 +255,6 @@ function Message({ msg, index, stale, isLastRound, busy }) {
  *  恰好抽掉了唯一能让流式那条重绘的开关 —— props 里没有它，memo 却看得见它。 */
 export default memo(Message, (a, b) => (
   a.msg === b.msg && a.index === b.index && a.stale === b.stale
-  && a.isLastRound === b.isLastRound && a.busy === b.busy
+  && a.isLastRound === b.isLastRound && a.busy === b.busy && a.canRetry === b.canRetry
   && !(b.msg && b.msg.streaming)
 ));

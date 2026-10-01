@@ -130,6 +130,21 @@ export const TOOL_FIELDS = {
     tip: '超过就杀掉整个进程组。服务端硬上限（默认 600 秒）之下才有效。' },
   plugin_exec_out_kb: { label: '输出上限', group: 'exec', kind: 'number', def: 16, min: 1, step: 1, unit: 'KB',
     tip: 'stdout+stderr 各自的上限，超出截断（并注明已截断）。' },
+  subagent_on: { label: '子智能体（spawn_agent）', group: 'subagent', kind: 'switch', def: true,
+    tip: '允许模型把一件独立的事交给子智能体去跑：它有自己的一段上下文与工具集，只把结论带回主对话'
+      + '（主对话不必装下它翻过的所有中间内容）。关掉后不注册这个工具。' },
+  tool_subagent_max: { label: '单轮最多派几次', group: 'subagent', kind: 'number', def: 3, min: 1, step: 1,
+    tip: '一轮对话里最多调用几次 spawn_agent（子智能体内部的工具调用不算在这里，走它自己的预算）。' },
+  subagent_parallel: { label: '同时最多几个', group: 'subagent', kind: 'number', def: 2, min: 1, step: 1,
+    tip: '同时在跑的子智能体上限；超出的排队执行，不会丢任务（子智能体之间互不共享上下文）。' },
+  subagent_rounds: { label: '每个最多几轮', group: 'subagent', kind: 'number', def: 6, min: 1, step: 1,
+    tip: '子智能体最多"想一步—调工具"几轮，到点必须给结论（防止一个子任务无限跑下去）。' },
+  subagent_write: { label: '允许子智能体改东西', group: 'subagent', kind: 'switch', def: false,
+    tip: '默认子智能体**只读**（读文件/找文件/联网搜索/查记忆/加载技能）。开启后它才能写文件、执行命令、'
+      + '写记忆——这些操作依旧会弹确认框，并且同样受访问级别与绑定账号权限限制。' },
+  plugin_deliver_on: { label: '传输文件（待下载）', group: 'fs', kind: 'switch', def: true,
+    tip: '允许模型把产出物放进你的「📥 待下载」目录（界面上点一下就下载）。'
+      + '可执行文件会被自动打包成 zip 再放进去——不给裸的可执行文件下载。' },
   agent_access: { label: '访问级别', group: 'access', kind: 'select', def: 'custom',
     options: [['custom', '自定（按开关逐项决定）'], ['ask', '每次都问'], ['auto_edit', '自动改文件'], ['full', '完全访问']],
     tip: '四档决定"哪些操作要你点头"。无论哪一档，都不超过绑定账号在系统里的权限。' },

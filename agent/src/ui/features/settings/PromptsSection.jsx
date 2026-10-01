@@ -1,10 +1,10 @@
-// PromptsSection.jsx —— 提示词登记表：分组条目（启停/编辑/重置）、技能区、自定义条目、发送预览
+// PromptsSection.jsx —— 提示词登记表：分组条目（启停/编辑/重置，技能在 ② 组里增删改）、自定义条目、发送预览
 import { useMemo, useState } from 'react';
 import { ChevronDown, Eye, Plus, Trash2 } from 'lucide-react';
 import { useApp } from '../../state/store.js';
 import {
-  setPromptText, applyPromptText, setPromptEnabled, resetPrompt,
-  addPromptEntry, removePromptEntry, addSkill, removeSkill, clearPromptDraft,
+  setPromptDraft, applyPromptText, setPromptEnabled, resetPrompt,
+  addPromptEntry, removePromptEntry, addSkill, removeSkill, clearPromptDraft, setSkillFields,
 } from '../../state/settings.js';
 import { Prompts } from '../../../core/prompts.js';
 import { sendPreview, promptDraftCount } from '../../state/host.js';
@@ -38,10 +38,10 @@ const isCustomSkill = (item) => item.custom === true;
    审计发现：此前这里另有一份 syncPrompts()（与 host.js 的同名函数重复），注释还停在
    "core 不发变更事件"的旧认知——那是 2026-09-30 修复之前的事，现在是多余的双写。 */
 
-/** 自定义技能不走覆盖表（Prompts.set 改不到技能记录），要用 updateSkill 直接改 */
-function setSkillField(id, patch) {
-  Prompts.updateSkill(id, patch);
-}
+/* 注：这里原有独立的「技能（可增删改）」区（SkillEditor 一排输入框 + 「保存技能」按钮），
+   与 ② 组的技能条目重复（同一份数据两个编辑器，改了一处另一处要刷新才对齐）。
+   2026-10-01 合并：技能的增删改全部在 ② 组里做——展开条目即可改名称/用途/加载方式/正文，
+   改动同样走"草稿 → 应用"；「新建技能」挂在 ② 组的列表下方。core 的读写入口一个没变。 */
 
 /* ============================ 条目行 ============================ */
 
@@ -78,118 +78,140 @@ function PromptActions({ item, customSkill, dirty, onApply, onReset, onRemove })
   );
 }
 
-function PromptItem({ item }) {
-  const st = useApp();
-  const [open, setOpen] = useState(false);
-  /* 草稿住在 state.promptDrafts（不是组件本地）：这样"有未应用的修改"在收起条目、切换条目、
-     甚至关掉抽屉再回来时都还在，发送前也能提醒一句（见 settings.js 的 setPromptText）。 */
-  const draft = Object.prototype.hasOwnProperty.call(st.promptDrafts || {}, item.id) ? st.promptDrafts[item.id] : null;
-  const text = draft === null ? item.text : draft;
-  const dirty = draft !== null && draft !== item.text;
-  const customSkill = isCustomSkill(item);
-
-  const toggle = (v) => (customSkill ? setSkillField(item.id, { enabled: v }) : setPromptEnabled(item.id, v));
-  const apply = () => {
-    const next = draft === null ? item.text : draft;
-    if (customSkill) setSkillField(item.id, { text: next });
-    else applyPromptText(item.id, next);
-    clearPromptDraft(item.id);        // 两条路径都要丢掉草稿（技能不走覆盖表，得手动清）
-  };
-  const reset = () => resetPrompt(item.id);
-  const remove = () => {
-    if (customSkill) removeSkill(item.id);
-    else removePromptEntry(item.id);
-    toast('已删除该条目', 'ok');
-  };
-
+/** 自定义技能的名称 / 加载方式 / 用途（与正文同一套「草稿 → 应用」，见 setPromptDraft） */
+function SkillMetaFields({ item, name, description, auto }) {
   return (
-    <div className="border-b border-border/70 last:border-b-0">
-      <div className="flex items-start gap-2 px-4 py-2">
-        <Switch className="mt-0.5" checked={!!item.enabled} onCheckedChange={toggle} aria-label={`启用 ${item.name}`} />
-        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setOpen((v) => !v)}>
-          <span className="flex flex-wrap items-center gap-1.5">
-            <span className={cn('truncate text-sm', item.enabled ? 'text-foreground' : 'text-subtle line-through')}>
-              {item.name}
-            </span>
-            <KindBadges item={item} />
-          </span>
-          {item.desc ? <FieldDesc className="line-clamp-2">{item.desc}</FieldDesc> : null}
-        </button>
-        <ChevronDown className={cn('mt-1.5 size-4 shrink-0 text-subtle transition-transform', open && 'rotate-180')} />
+    <>
+      <div className="flex flex-wrap items-center gap-2">
+        <ImeInput value={name} onChange={(e) => setPromptDraft(item.id, { name: e.target.value })}
+          className="h-8 max-w-56 text-xs" placeholder="技能名称" />
+        <ChoiceGroup
+          options={[['on', '按需加载'], ['off', '常驻注入']]}
+          value={auto ? 'on' : 'off'}
+          onChange={(v) => setPromptDraft(item.id, { auto: v === 'on' })}
+        />
+        <span className="text-xs text-subtle">
+          {auto ? '按需加载：只把名称与用途给模型，正文等它需要时再取。' : '常驻注入：正文每轮都进系统提示（只适合短而通用的约定）。'}
+        </span>
       </div>
+      <ImeInput value={description} onChange={(e) => setPromptDraft(item.id, { description: e.target.value })}
+        className="h-8 text-xs" placeholder="用途（给模型看的一句话，决定它要不要加载）" />
+    </>
+  );
+}
 
-      {open ? (
-        <div className="space-y-2 px-4 pb-3">
-          {/* 输入即写草稿（不碰登记表）；点「应用」才生效——与上面那条 NoteBox 的说法一致。
-              旧实现在 blur 时偷偷写进登记表，与「应用」按钮的语义打架（审计）。 */}
-          <ImeTextarea rows={8} value={text} spellCheck={false}
-            onChange={(e) => setPromptText(item.id, e.target.value)} />
-          {/* 主系统提示词的快选（core/prompts.js 的 presets）：填成草稿，点「应用」才生效 */}
-          {item.id === 'system.base' ? (
-            <div className="flex flex-wrap items-center gap-1.5">
-              <span className="text-xs text-subtle">快选：</span>
-              {Prompts.presets.map((preset) => (
-                <Button key={preset.id} size="sm" variant="outline"
-                  onClick={() => setPromptText(item.id, preset.text)}>{preset.name}</Button>
-              ))}
-            </div>
-          ) : null}
-          <PromptActions item={item} customSkill={customSkill} dirty={dirty} onApply={apply} onReset={reset} onRemove={remove} />
-        </div>
-      ) : null}
+/* 草稿住在 state.promptDrafts（不是组件本地）：这样"有未应用的修改"在收起条目、切换条目、
+   甚至关掉抽屉再回来时都还在，发送前也能提醒一句（见 settings.js 的 setPromptDraft）。
+   草稿是**补丁对象**：普通条目只有 { text }；自定义技能另带 { name, description, auto }。
+   下面几个模块级函数是"草稿 → 应用"的全部读写逻辑（放在组件外：进出组件只传值，判据只有一份）。 */
+
+/** 一条目的最终值 = 当前值叠上草稿补丁；dirty 按**逐字段比较**判定——
+ *  草稿在但值改回原样时不算（否则「应用」按钮一直亮着、顶栏徽章挂着一条点不掉的"未应用"）。 */
+function draftView(item, drafts) {
+  const custom = isCustomSkill(item);
+  const base = { text: item.text, name: item.name, description: item.desc || '', auto: item.auto !== false };
+  const draft = Object.prototype.hasOwnProperty.call(drafts || {}, item.id) ? drafts[item.id] : null;
+  const view = Object.assign({}, base);
+  if (draft) for (const k of Object.keys(view)) if (draft[k] !== undefined) view[k] = draft[k];
+  const fields = custom ? Object.keys(base) : ['text'];
+  view.dirty = !!draft && fields.some((k) => view[k] !== base[k]);
+  return view;
+}
+
+/** 开关：对普通条目写覆盖表；自定义技能不走覆盖表，用 updateSkill 直接改（关掉 = 不注入/不可加载） */
+const toggleItem = (item, on) => (isCustomSkill(item)
+  ? setSkillFields(item.id, { enabled: on })
+  : setPromptEnabled(item.id, on));
+
+/** 应用一条草稿：自定义技能的名称/用途/加载方式/正文整份交给 updateSkill（登记表自己 notify → 落盘） */
+function applyItem(item, view) {
+  if (isCustomSkill(item)) setSkillFields(item.id, { name: view.name, description: view.description, auto: view.auto, text: view.text });
+  else applyPromptText(item.id, view.text);
+  clearPromptDraft(item.id);        // 两条路径都要丢掉草稿（技能不走覆盖表，得手动清）
+}
+
+function removeItem(item) {
+  if (isCustomSkill(item)) removeSkill(item.id);
+  else removePromptEntry(item.id);
+  toast('已删除该条目', 'ok');
+}
+
+/** 主系统提示词的快选（core/prompts.js 的 presets）：填成草稿，点「应用」才生效 */
+function PresetChips({ item }) {
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs text-subtle">快选：</span>
+      {Prompts.presets.map((preset) => (
+        <Button key={preset.id} size="sm" variant="outline"
+          onClick={() => setPromptDraft(item.id, { text: preset.text })}>{preset.name}</Button>
+      ))}
     </div>
   );
 }
 
-function PromptGroup({ id, items }) {
-  if (!items.length) return null;
+/** 展开后的编辑器。输入即写草稿（不碰登记表）；点「应用」才生效——与上面那条 NoteBox 的说法一致。
+    旧实现在 blur 时偷偷写进登记表，与「应用」按钮的语义打架（审计）。 */
+function PromptEditor({ item, view }) {
+  return (
+    <div className="space-y-2 px-4 pb-3">
+      {/* 自定义技能：名称 / 用途 / 加载方式与正文一样走「草稿 → 应用」
+          （用途决定模型要不要加载它；常驻 = 正文每轮直接注入，按需 = 只给名字与用途） */}
+      {isCustomSkill(item)
+        ? <SkillMetaFields item={item} name={view.name} description={view.description} auto={view.auto} />
+        : null}
+      <ImeTextarea rows={8} value={view.text} spellCheck={false}
+        onChange={(e) => setPromptDraft(item.id, { text: e.target.value })} />
+      {item.id === 'system.base' ? <PresetChips item={item} /> : null}
+      <PromptActions item={item} customSkill={isCustomSkill(item)} dirty={view.dirty}
+        onApply={() => applyItem(item, view)} onReset={() => resetPrompt(item.id)}
+        onRemove={() => removeItem(item)} />
+    </div>
+  );
+}
+
+function PromptItem({ item }) {
+  const st = useApp();
+  const [open, setOpen] = useState(false);
+  const view = draftView(item, st.promptDrafts);
+  return (
+    <div className="border-b border-border/70 last:border-b-0">
+      <div className="flex items-start gap-2 px-4 py-2">
+        <Switch className="mt-0.5" checked={!!item.enabled} onCheckedChange={(on) => toggleItem(item, on)}
+          aria-label={`启用 ${item.name}`} />
+        <button type="button" className="min-w-0 flex-1 text-left" onClick={() => setOpen((v) => !v)}>
+          <span className="flex flex-wrap items-center gap-1.5">
+            <span className={cn('truncate text-sm', item.enabled ? 'text-foreground' : 'text-subtle line-through')}>
+              {view.name}
+            </span>
+            <KindBadges item={item} />
+          </span>
+          {view.description ? <FieldDesc className="line-clamp-2">{view.description}</FieldDesc> : null}
+        </button>
+        <ChevronDown className={cn('mt-1.5 size-4 shrink-0 text-subtle transition-transform', open && 'rotate-180')} />
+      </div>
+
+      {open ? <PromptEditor item={item} view={view} /> : null}
+    </div>
+  );
+}
+
+/** 一个分组：标题 + 条目卡（footer 放"新建"这类挂在组尾的入口，见 ② 技能组） */
+function PromptGroup({ id, items, footer }) {
+  if (!items.length && !footer) return null;
   return (
     <section>
       <SectionTitle>{Prompts.groupTitles[id] || id}</SectionTitle>
       <div className="overflow-hidden rounded-lg border border-border">
         {items.map((item) => <PromptItem key={item.id} item={item} />)}
       </div>
+      {footer ? <div className="mt-2">{footer}</div> : null}
     </section>
   );
 }
 
-/* ============================ 技能 ============================ */
+/* ============================ 新建技能（挂在 ② 技能组列表下方） ============================ */
 
-function SkillEditor({ skill }) {
-  const [name, setName] = useState(skill.name);
-  const [description, setDescription] = useState(skill.description || '');
-  const [text, setText] = useState(skill.text || '');
-  const save = () => {
-    Prompts.updateSkill(skill.id, { name, description, text });
-    toast('技能已保存', 'ok');
-  };
-  return (
-    <div className="space-y-2 rounded-md border border-border px-3 py-2">
-      <div className="flex flex-wrap items-center gap-2">
-        <ImeInput value={name} onChange={(e) => setName(e.target.value)} className="h-8 max-w-56 text-xs" placeholder="技能名称" />
-        <ChoiceGroup
-          options={[['on', '按需加载'], ['off', '常驻注入']]}
-          value={skill.auto === false ? 'off' : 'on'}
-          onChange={(v) => Prompts.updateSkill(skill.id, { auto: v === 'on' })}
-        />
-        <span className="flex-1" />
-        <Button size="sm" variant="ghost" className="text-destructive"
-          onClick={() => { removeSkill(skill.id); toast('已删除技能', 'ok'); }}>
-          <Trash2 />删除
-        </Button>
-      </div>
-      <ImeInput value={description} onChange={(e) => setDescription(e.target.value)}
-        className="h-8 text-xs" placeholder="用途（给模型看的一句话，决定它要不要加载）" />
-      <ImeTextarea rows={6} value={text} spellCheck={false} onChange={(e) => setText(e.target.value)} placeholder="技能正文" />
-      <div className="flex items-center gap-2">
-        <Button size="sm" onClick={save}>保存技能</Button>
-        <span className="text-xs text-subtle">「按需加载」只把名字与用途给模型，正文由它自己决定何时取。</span>
-      </div>
-    </div>
-  );
-}
-
-function AddSkillButton() {
+function AddSkillForm() {
   const [open, setOpen] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
@@ -205,12 +227,13 @@ function AddSkillButton() {
   return (
     <div className="space-y-2 rounded-md border border-border px-3 py-2">
       <ImeInput value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" placeholder="技能名称" />
-      <ImeInput value={description} onChange={(e) => setDescription(e.target.value)} className="h-8 text-xs" placeholder="用途" />
+      <ImeInput value={description} onChange={(e) => setDescription(e.target.value)} className="h-8 text-xs" placeholder="用途（给模型看的一句话，决定它要不要加载）" />
       <ImeTextarea rows={4} value={text} onChange={(e) => setText(e.target.value)} placeholder="技能正文" />
       <div className="flex items-center gap-2">
         <Button size="sm" onClick={add}>添加</Button>
         <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>取消</Button>
       </div>
+      <FieldDesc>新技能默认「按需加载」；建好后在上面的条目里展开，可改名称、用途、加载方式与正文。</FieldDesc>
     </div>
   );
 }
@@ -292,7 +315,6 @@ export default function PromptsSection() {
   const { revision } = useApp();
   /* Prompts 是 core 层对象：登记表改动只会 bump revision，这里按它重算清单 */
   const items = useMemo(() => { void revision; return Prompts.all(); }, [revision]);
-  const skills = Prompts.skills();
   const extras = items.filter(isExtra);
   const [previewOpen, setPreviewOpen] = useState(false);
   const total = items.reduce((n, it) => n + (it.enabled ? String(it.text || '').length : 0), 0);
@@ -311,21 +333,13 @@ export default function PromptsSection() {
 
       <NoteBox>
         这里列出所有会发给模型的文本：改动先落在草稿上，点「应用」才注入；关掉开关 = 该条永不注入。
-        空白正文会被跳过。
+        空白正文会被跳过。技能在 ② 组里增删改：展开条目可改名称/用途/加载方式/正文，组尾可新建技能。
       </NoteBox>
 
       {GROUP_ORDER.map((gid) => (
-        <PromptGroup key={gid} id={gid} items={items.filter((it) => it.group === gid)} />
+        <PromptGroup key={gid} id={gid} items={items.filter((it) => it.group === gid)}
+          footer={gid === 'skills' ? <AddSkillForm /> : null} />
       ))}
-
-      <section>
-        <SectionTitle>技能（可增删改）</SectionTitle>
-        <div className="space-y-2 px-4">
-          {skills.length ? skills.map((s) => <SkillEditor key={s.id} skill={s} />)
-            : <EmptyHint>还没有自定义技能。内置的「联网搜索」在上面第 ② 组里。</EmptyHint>}
-          <AddSkillButton />
-        </div>
-      </section>
 
       <section>
         <SectionTitle>自定义条目</SectionTitle>

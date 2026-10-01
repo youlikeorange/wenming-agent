@@ -60,37 +60,46 @@ function stubRoutes(routes) {
 
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
+/** /agent/run/state 的桩：run = 这条会话在跑的那一段；runs = 本账号全部在跑的（统一口用） */
+const runState = (run, runs) => json({ ok: true, run: run || null, runs: runs || (run ? [run] : []), busy: runs || (run ? [run] : []) });
+
+/* 统一事件口（/agent/run/hub）的桩：**一条流收全部会话的运行事件**（2026-10-01 起客户端只连它）。
+   事件形状与服务端一致：每个事件都带 runId/sessionId（客户端据此写回"它那条会话"），
+   hub_snapshot 给出"现在有哪几段在跑"，replay_start 带 liveId（服务端那条助手消息的 id）。 */
+const hubOf = (run, events) => sse([{ type: 'hub_snapshot', runs: run ? [run] : [] }].concat(events));
+
 /* ==================== ① 刷新之后要接上服务端在跑的那一段 ==================== */
 
 test('★ 刷新后续播：落盘快照里 streaming 还是 true，也必须接上服务端在跑的那一段', async () => {
   const { state } = await import('../src/ui/state/store.js');
   const Run = await import('../src/ui/state/run.js');
   state.activeSessId = 's1';
-  /* 刷新时从服务端拉到的历史：运行开始时服务端就写了占位（streaming:true），
+  /* 刷新时从服务端拉到的历史：运行开始时服务端就写了占位（streaming:true 且带它自己的 id），
      所以这条"看起来正在生成"的消息并不代表本地挂着读取连接——旧实现据此直接 return，
-     于是永远不订阅、界面停在半截上。 */
-  state.history = [
-    { role: 'user', content: '在吗' },
-    { role: 'assistant', content: '半截内容', thinking: '', trace: [], streaming: true },
-  ];
+     于是永远不订阅、界面停在半截上。**id 正是服务端的 liveId**：事件按它寻址。 */
+  const live = { id: 'm9', role: 'assistant', content: '半截内容', thinking: '', trace: [], streaming: true };
+  state.sessions = [{ id: 's1', title: 'T', ts: 1, msgs: [{ id: 'm8', role: 'user', content: '在吗' }, live] }];
+  state.history = state.sessions[0].msgs.slice();
+  const running = { runId: 'r1', sessionId: 's1', liveId: 'm9', status: 'running' };
   const r = stubRoutes({
-    '/agent/run/state': () => json({ ok: true, run: { runId: 'r1', status: 'running', sessionId: 's1' } }),
-    '/agent/run/events': () => sse([
-      { type: 'replay_start', truncated: false, status: 'running' },
-      { type: 'content', text: '完整回答' },
-      { type: 'end', status: 'done', error: '', ms: 1234 },
+    '/agent/run/state': () => runState(running),
+    '/agent/run/hub': () => hubOf(running, [
+      { type: 'replay_start', runId: 'r1', sessionId: 's1', liveId: 'm9', truncated: false, status: 'running' },
+      { type: 'content', runId: 'r1', sessionId: 's1', text: '完整回答' },
+      { type: 'end', runId: 'r1', sessionId: 's1', status: 'done', error: '', ms: 1234 },
     ]),
   });
   try {
     const run = await Run.reattach('s1');
     assert.equal(run && run.runId, 'r1', '必须认出服务端还在跑的那一段');
-    assert.ok(r.calls.some((c) => c.url.includes('/agent/run/events')), '必须真的订阅事件流（旧实现被 streaming:true 挡在这里）');
+    await tick(60);                       // 统一口是**另开一条流**（reattach 只负责登记与对齐）
+    assert.ok(r.calls.some((c) => c.url.includes('/agent/run/hub')), '必须接上统一事件口（旧实现被 streaming:true 挡在这里）');
     const last = state.history[state.history.length - 1];
     assert.equal(last.content, '完整回答', '回放要覆盖刷新时拉到的半截内容');
     assert.ok(!last.streaming, '收到结束事件后不该再挂着 streaming');
     assert.ok(!last.error, '跑完的那一轮不能被判成"没有跑完"');
     assert.equal(state.streaming, false, '整轮结束后界面退出生成态');
-  } finally { r.restore(); }
+  } finally { r.restore(); Run.reset(); }
 });
 
 test('★ 运行结束 / 模型改过数据：通知宿主持服务端那份重拉（界面显示服务端的数据）', async () => {
@@ -101,21 +110,26 @@ test('★ 运行结束 / 模型改过数据：通知宿主持服务端那份重�
   host.hooks.onRunDataChanged = () => seen.push('data');
   host.hooks.onRunEnded = (sid) => seen.push('end:' + sid);
   state.activeSessId = 's1';
-  state.history = [{ role: 'user', content: 'x' }, { role: 'assistant', content: '', streaming: true }];
+  const live = { id: 'm2', role: 'assistant', content: '', streaming: true, trace: [] };
+  state.sessions = [{ id: 's1', title: 'T', ts: 1, msgs: [{ id: 'm1', role: 'user', content: 'x' }, live] }];
+  state.history = state.sessions[0].msgs.slice();
+  const running = { runId: 'r2', sessionId: 's1', liveId: 'm2', status: 'running' };
   const r = stubRoutes({
-    '/agent/run/state': () => json({ ok: true, run: { runId: 'r2', status: 'running', sessionId: 's1' } }),
-    '/agent/run/events': () => sse([
-      { type: 'data_changed' },
-      { type: 'content', text: 'ok' },
-      { type: 'end', status: 'done', error: '', ms: 10 },
+    '/agent/run/state': () => runState(running),
+    '/agent/run/hub': () => hubOf(running, [
+      { type: 'replay_start', runId: 'r2', sessionId: 's1', liveId: 'm2', truncated: false, status: 'running' },
+      { type: 'data_changed', runId: 'r2', sessionId: 's1' },
+      { type: 'content', runId: 'r2', sessionId: 's1', text: 'ok' },
+      { type: 'end', runId: 'r2', sessionId: 's1', status: 'done', error: '', ms: 10 },
     ]),
   });
   try {
     await Run.reattach('s1');
-    await tick(60);                     // 钩子是动态 import 之后调的
+    await tick(80);                     // 钩子是动态 import 之后调的
     assert.deepEqual(seen, ['data', 'end:s1'], '模型改数据与整轮结束都要通知宿主（旧实现把 data_changed 直接丢掉）');
   } finally {
     r.restore();
+    Run.reset();
     host.hooks.onRunDataChanged = null; host.hooks.onRunEnded = null;
   }
 });
@@ -132,7 +146,7 @@ test('★ 回来时这一轮已经跑完：先重拉服务端那份，再判定�
     state.history = [{ role: 'user', content: 'x' }, { role: 'assistant', content: '完整回答', wallMs: 9000, trace: [] }];
     return true;
   };
-  const r = stubRoutes({ '/agent/run/state': () => json({ ok: true, run: null, busy: null }) });
+  const r = stubRoutes({ '/agent/run/state': () => runState(null, []) });
   try {
     const out = await Run.reattach('s1');
     assert.equal(out, null, '没有在跑的运行');
@@ -155,7 +169,7 @@ test('★ 端到端：真接入 host 钩子后，刷新回来发现已跑完 →
   state.activeSessId = 's1';
   state.history = [{ role: 'user', content: '问题' }, { role: 'assistant', content: '半截', streaming: true, trace: [] }];
   const r = stubRoutes({
-    '/agent/run/state': () => json({ ok: true, run: null }),
+    '/agent/run/state': () => runState(null, []),
     '/agent/store': () => json({
       ok: true,
       settings: { currentSess: 's1', providers: [], params: {}, theme: {}, ui: {}, tools: {} },
@@ -185,37 +199,40 @@ test('★ 读取断线：界面保持生成态并自动重连（这一轮还在�
   const Run = await import('../src/ui/state/run.js');
   state.activeSessId = 's1';
   state.history = [{ role: 'user', content: 'x' }, { role: 'assistant', content: '', streaming: true, trace: [] }];
-  let stateCalls = 0;
-  let eventsCalls = 0;
+  let hubCalls = 0;
+  const running = { runId: 'r3', sessionId: 's1', liveId: 'm5', status: 'running' };
+  state.sessions = [{ id: 's1', title: 'T', ts: 1, msgs: [{ id: 'm4', role: 'user', content: 'x' }, { id: 'm5', role: 'assistant', content: '', streaming: true, trace: [] }] }];
+  state.history = state.sessions[0].msgs.slice();
   const r = stubRoutes({
-    '/agent/run/state': () => { stateCalls++; return json({ ok: true, run: { runId: 'r3', status: 'running', sessionId: 's1' } }); },
-    '/agent/run/events': () => {
-      eventsCalls++;
-      if (eventsCalls === 1) {
+    '/agent/run/state': () => runState(running),
+    '/agent/run/hub': () => {
+      hubCalls++;
+      if (hubCalls === 1) {
         // 第一条连接：吐一个分片后直接断（隧道抖动 / 后台标签被节流的现实形态）
         const enc = new TextEncoder();
         return new Response(new ReadableStream({
-          start(c) { c.enqueue(enc.encode('data: {"type":"content","text":"前半"}\n\n')); c.error(new Error('socket 断了')); },
+          start(c) { c.enqueue(enc.encode('data: {"type":"content","runId":"r3","sessionId":"s1","text":"前半"}\n\n')); c.error(new Error('socket 断了')); },
         }), { status: 200, headers: { 'content-type': 'text/event-stream' } });
       }
       /* 重连按**服务端的真实形态**回：先 replay_start，再把这一轮已发生的事件整份回放
          （所以第一条连接丢掉的那个分片不影响正确性——回放里什么都有）。 */
-      return sse([
-        { type: 'replay_start', truncated: false, status: 'running' },
-        { type: 'content', text: '前半后半' },
-        { type: 'end', status: 'done', error: '', ms: 5 },
+      return hubOf(running, [
+        { type: 'replay_start', runId: 'r3', sessionId: 's1', liveId: 'm5', truncated: false, status: 'running' },
+        { type: 'content', runId: 'r3', sessionId: 's1', text: '前半后半' },
+        { type: 'end', runId: 'r3', sessionId: 's1', status: 'done', error: '', ms: 5 },
       ]);
     },
   });
   try {
     await Run.reattach('s1');
+    await tick(40);
     assert.equal(state.streaming, true, '断线后界面保持生成态（旧行为会先删掉占位、看着像被打断）');
     assert.ok(state.history[state.history.length - 1].streaming, '占位不能提前摘掉');
-    await tick(3200);                                    // 内置的自动重连延迟是 2.5s
-    assert.ok(stateCalls >= 2, '必须自动重连一次（再问服务端这一轮还在不在）');
+    await tick(2200);                                    // 内置的自动重连延迟是 1.5s 起
+    assert.ok(hubCalls >= 2, '必须自动重连一次（统一口断了就重连，服务端会回放）');
     assert.equal(state.history[state.history.length - 1].content, '前半后半', '重连后按回放补齐内容');
     assert.equal(state.streaming, false, '结束事件之后退出生成态');
-  } finally { r.restore(); }
+  } finally { r.restore(); Run.reset(); }
 });
 
 /* ==================== ② 取数归口（2026-10-01 用户要求） ==================== */
@@ -473,42 +490,48 @@ test('「设置 → 记忆」打开时把当前项目的记忆从服务端重拉
 
 /* ==================== 第六轮（2026-10-01）修复的回归 ==================== */
 
-test('★ 一轮结束：结果要写回会话对象并排队落盘（不能只等 1.5 秒后的整份重拉）', async () => {
+test('★ 一轮结束：结果与标题/会话记忆写进会话对象，落盘交给服务端（客户端不再覆盖写回）', async () => {
   const { state } = await import('../src/ui/state/store.js');
   const Run = await import('../src/ui/state/run.js');
   await import('../src/ui/state/session.js');          // 注册宿主钩子（onRunEnded → persistSession）
   const { Store } = await import('../src/core/store.js');
   Store.user = { username: 'u1' };
-  const sess = { id: 's1', title: '新对话', ts: Date.now(), msgs: [{ role: 'user', content: '上一句' }] };
-  state.sessions = [sess];
-  state.activeSessId = 's1';
-  state.currentProjectId = '';
-  state.history = [
+  const msgs = [
     { id: 'm1', role: 'user', content: '上一句' },
     { id: 'm2', role: 'user', content: '新问题' },
     { id: 'm3', role: 'assistant', content: '', streaming: true, trace: [] },
   ];
+  const sess = { id: 's1', title: '新对话', ts: Date.now(), msgs };
+  state.sessions = [sess];
+  state.activeSessId = 's1';
+  state.currentProjectId = '';
+  state.history = msgs.slice();                          // 与服务端历史共享同一条消息对象（与生产一致）
+  const running = { runId: 'r9', sessionId: 's1', liveId: 'm3', status: 'running' };
   const r = stubRoutes({
-    '/agent/run/state': () => json({ ok: true, run: { runId: 'r9', status: 'running', sessionId: 's1' } }),
-    '/agent/run/events': () => sse([
-      { type: 'replay_start', truncated: false, status: 'running' },
-      { type: 'content', text: '这是回答' },
-      { type: 'end', status: 'done', ms: 12 },
+    '/agent/run/state': () => runState(running),
+    '/agent/run/hub': () => hubOf(running, [
+      { type: 'replay_start', runId: 'r9', sessionId: 's1', liveId: 'm3', truncated: false, status: 'running' },
+      { type: 'content', runId: 'r9', sessionId: 's1', text: '这是回答' },
+      { type: 'end', runId: 'r9', sessionId: 's1', status: 'done', ms: 12, title: '服务端标题', memory: [{ id: 's-mem', title: '会话结论', content: '结论正文' }] },
     ]),
   });
   try {
     await Run.reattach('s1');
-    await tick(60);
+    await tick(80);
     assert.equal(state.history[2].content, '这是回答', '界面拿到了正文');
     assert.equal(state.streaming, false, '生成态结清');
     /* 关键：**会话对象**（下次切回来/再发消息时用的那份）必须也有这一轮。
-       旧实现只写 state.history：1.5 秒内切走会话 → 重拉被跳过 → 会话对象还是运行前的快照，
-       切回来再发一条就会把服务端刚跑完的一轮覆盖掉（实测的数据丢失）。 */
+       事件是写进会话对象消息里的（不是只改 state.history 的副本），所以两处同源。 */
     assert.ok(sess.msgs.some((m) => m.content === '这是回答'), '★ 会话对象里也要有这一轮的正文');
-    assert.equal(sess.title, '上一句', '标题照旧由第一条用户消息决定');
-    await tick(600);                                     // 等会话落盘的防抖（400ms）
-    assert.ok(r.calls.some((c) => c.url.includes('/agent/store/sessions') && String(c.body).includes('这是回答')),
-      '★ 会话要排队写回服务端（切走也不会丢）');
+    /* 标题 / 会话记忆**只有服务端有**（循环在服务端跑）：end 事件带回来，这里写进会话对象。
+       否则下一次任何写回都会把它们抹掉（旧实现就不会，实测踩过）。 */
+    assert.equal(sess.title, '服务端标题', '★ 标题以服务端那份为准');
+    assert.equal((sess.memory || []).length, 1, '★ 模型写的会话记忆也写进会话对象');
+    await tick(600);
+    /* 落盘由**服务端**负责（它写完才广播 end）：客户端不再拿自己那份覆盖写回去——
+       那一份可能是落后的（1.5 秒防抖窗口里切走会话就是旧快照，实测的数据丢失路径）。 */
+    assert.equal(r.calls.some((c) => c.url.includes('/agent/store/sessions')), false,
+      '★ 客户端不再把这一轮覆盖写回服务端（避免用落后快照盖掉服务端的最终版）');
   } finally {
     r.restore();
     Run.reset();
@@ -525,18 +548,21 @@ test('★ 插话成功才返回 true（Composer 只在 true 时清空草稿）',
   state.sessions = [{ id: 's1', title: 'T', msgs: [] }];
   state.activeSessId = 's1';
   state.currentProjectId = '';
-  state.history = [{ id: 'u', role: 'user', content: 'q' }, { id: 'live', role: 'assistant', content: '', streaming: true, trace: [] }];
+  const msgs = [{ id: 'u', role: 'user', content: 'q' }, { id: 'live', role: 'assistant', content: '', streaming: true, trace: [] }];
+  state.sessions = [{ id: 's1', title: 'T', ts: 1, msgs }];
+  state.history = msgs.slice();
   let steerStatus = 409;                                 // 服务端说"这一轮已经结束了"
+  const running = { runId: 'r1', sessionId: 's1', liveId: 'live', status: 'running' };
   const r = stubRoutes({
-    '/agent/run/state': () => json({ ok: true, run: { runId: 'r1', status: 'running', sessionId: 's1' } }),
-    '/agent/run/events': () => sse([{ type: 'replay_start', truncated: false, status: 'running' }, { type: 'content', text: '片段' }]),
+    '/agent/run/state': () => runState(running),
+    '/agent/run/hub': () => hubOf(running, [{ type: 'replay_start', runId: 'r1', sessionId: 's1', liveId: 'live', truncated: false, status: 'running' }, { type: 'content', runId: 'r1', sessionId: 's1', text: '片段' }]),
     '/agent/run/steer': () => new Response(
       JSON.stringify(steerStatus === 200 ? { ok: true } : { ok: false, error: '这一轮已经结束了（话没送出去）' }),
       { status: steerStatus, headers: { 'content-type': 'application/json' } }),
   });
   try {
     await Run.reattach('s1');
-    await tick(60);
+    await tick(80);
     assert.equal(await Session.steer('喂'), false, '★ 服务端拒绝 → false（草稿不能被清掉）');
     steerStatus = 200;
     assert.equal(await Session.steer('喂'), true, '送出去了 → true');
@@ -595,32 +621,41 @@ test('★ 登出后（settings=null）设置动作不再抛 TypeError', async ()
   assert.equal(state.settings.theme.accent, 'green', '外观动作同样可用');
 });
 
-test('★ 收尾时把服务端交回的压缩摘要写进会话对象（写回不能抹掉它）', async () => {
+test('★★ 多会话并行：后台那条会话结束时，正文/标题/摘要都写进**它自己**那份（当前会话不动）', async () => {
   const { state } = await import('../src/ui/state/store.js');
   const Run = await import('../src/ui/state/run.js');
   await import('../src/ui/state/session.js');
   const { Store } = await import('../src/core/store.js');
   Store.user = { username: 'u1' };
-  const sess = { id: 's1', title: 'T', ts: Date.now(), msgs: [], compaction: undefined };
-  state.sessions = [sess];
+  /* 我正在看 s1，而 s2 在后台跑（多窗口/多会话并行的典型形态） */
+  const msgsA = [{ id: 'a1', role: 'user', content: '当前会话的问题' }, { id: 'a2', role: 'assistant', content: '当前会话的回答' }];
+  const sessA = { id: 's1', title: '当前', ts: 2, msgs: msgsA };
+  const msgsB = [{ id: 'b1', role: 'user', content: '后台的问题' }, { id: 'b2', role: 'assistant', content: '', streaming: true, trace: [] }];
+  const sessB = { id: 's2', title: '后台', ts: 1, msgs: msgsB };
+  state.sessions = [sessA, sessB];
   state.activeSessId = 's1';
   state.currentProjectId = '';
-  state.history = [
-    { id: 'u1', role: 'user', content: '问' },
-    { id: 'a1', role: 'assistant', content: '', streaming: true, trace: [] },
-  ];
+  state.history = msgsA.slice();
+  const running = { runId: 'rc', sessionId: 's2', liveId: 'b2', status: 'running' };
   const r = stubRoutes({
-    '/agent/run/state': () => json({ ok: true, run: { runId: 'rc', status: 'running', sessionId: 's1' } }),
-    '/agent/run/events': () => sse([
-      { type: 'replay_start', truncated: false, status: 'running' },
-      { type: 'content', text: '答' },
-      { type: 'end', status: 'done', ms: 5, compaction: { upTo: 2, count: 2, text: '摘要正文', ts: 1 } },
+    '/agent/run/state': () => runState(null, [running]),   // 当前会话没有在跑，后台有一条
+    '/agent/run/hub': () => hubOf(running, [
+      { type: 'replay_start', runId: 'rc', sessionId: 's2', liveId: 'b2', truncated: false, status: 'running' },
+      { type: 'content', runId: 'rc', sessionId: 's2', text: '后台的回答' },
+      { type: 'end', runId: 'rc', sessionId: 's2', status: 'done', ms: 5, title: '后台标题',
+        compaction: { upTo: 2, count: 2, text: '摘要正文', ts: 1 } },
     ]),
   });
   try {
     await Run.reattach('s1');
-    await tick(80);
-    assert.equal(sess.compaction && sess.compaction.text, '摘要正文', '★ 会话对象拿到了服务端的摘要');
+    await tick(120);
+    assert.equal(state.history[1].content, '当前会话的回答', '当前会话的内容一个字都不该被动');
+    assert.equal(sessA.title, '当前', '当前会话的标题不动');
+    assert.equal(sessB.msgs[1].content, '后台的回答', '★ 后台那条会话拿到了它自己的正文');
+    assert.equal(sessB.title, '后台标题', '★ 标题写进后台那条会话');
+    assert.equal(sessB.compaction && sessB.compaction.text, '摘要正文', '★ 摘要写进后台那条会话');
+    assert.equal(state.runs.s2 && state.runs.s2.settled, true, '后台那条记录已收尾');
+    assert.equal(state.streaming, false, '当前会话没有在跑');
   } finally {
     r.restore();
     Run.reset();

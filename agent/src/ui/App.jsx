@@ -13,6 +13,7 @@ import ChatView from './features/ChatView.jsx';
 import Composer from './features/Composer.jsx';
 import SettingsDrawer from './features/settings/SettingsDrawer.jsx';
 import { ConfirmDialog } from './features/ConfirmDialog.jsx';
+import { DownloadsDialog } from './features/DownloadsDialog.jsx';
 import { LoginDialog } from './features/LoginDialog.jsx';
 import { KickedOverlay } from './features/KickedOverlay.jsx';
 import { Toaster, toast } from './components/ui/toast.jsx';
@@ -78,6 +79,7 @@ export default function App() {
 
       <SettingsDrawer />
       <ConfirmDialog />
+      <DownloadsDialog />
       <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} hint={loginHint} />
       <KickedOverlay />
       <Toaster />

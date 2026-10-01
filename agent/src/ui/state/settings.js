@@ -229,16 +229,27 @@ export async function lockOsAccount() {
    草稿放 state.promptDrafts，不碰 core 的登记表；点「应用」才写进登记表（登记表自己会通知宿主落盘）。
    为什么要有草稿：登记表一变就会注入给模型（并落盘），逐字输入时每敲一下都生效等于没有"确认"这一步；
    而"有未应用的修改"必须能被看见，否则草稿就是无声的丢失（旧实现在 blur 时偷偷写进登记表，
-   与按钮语义打架，且那两处 `Prompts.isDirty()` 调用指向一个**从未存在**的函数，徽章永远不显示）。 */
-export function setPromptText(id, text) {
-  patch({ promptDrafts: Object.assign({}, state.promptDrafts, { [id]: text }) });
+   与按钮语义打架，且那两处 `Prompts.isDirty()` 调用指向一个**从未存在**的函数，徽章永远不显示）。
+
+   草稿的形态是**补丁对象** { text?, name?, description?, auto? }：
+     · 普通条目只会写 text；
+     · 自定义技能（② 组里 custom: true 的条目）四个字段都可能在草稿里——
+       技能不走覆盖表（Prompts.set 改不到技能记录），应用时整份交给 Prompts.updateSkill。 */
+export function setPromptDraft(id, patchFields) {
+  const cur = (state.promptDrafts || {})[id] || {};
+  patch({ promptDrafts: Object.assign({}, state.promptDrafts, { [id]: Object.assign({}, cur, patchFields) }) });
 }
-/** 应用一条草稿：写进登记表（→ onChange → 落盘）+ 清掉草稿 */
+/** 应用一条草稿（普通条目）：写进登记表（→ onChange → 落盘）+ 清掉草稿 */
 export function applyPromptText(id, text) {
   Prompts.set(id, text);
   clearPromptDraft(id);
 }
-/** 丢掉一条草稿（恢复默认 / 删除条目时用） */
+/** 自定义技能的立刻写入（不加草稿）：开关这类"一眼可见"的改动走这里；
+ *  名称/用途/加载方式/正文与前者不同——它们也走草稿，点「应用」时由调用方整份传进来。 */
+export function setSkillFields(id, patchFields) {
+  Prompts.updateSkill(id, patchFields);
+}
+/** 丢掉一条草稿（应用后 / 恢复默认 / 删除条目时用） */
 export function clearPromptDraft(id) {
   if (!(id in (state.promptDrafts || {}))) return;
   const next = Object.assign({}, state.promptDrafts);

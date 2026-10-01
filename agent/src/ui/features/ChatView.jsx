@@ -9,6 +9,7 @@ import { patch, useApp } from '../state/store.js';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
 import JumpButton from './JumpButton.jsx';
 import Message from './Message.jsx';
+import SessionOutline from './SessionOutline.jsx';
 import { handleCodeCopy, requestScrollBottom, takeScrollBottom } from './chat-utils.js';
 
 /* 欢迎页的建议 chips：点一下把整句填进输入框（不直接发送，用户还能改） */
@@ -156,6 +157,7 @@ export default function ChatView() {
           ) : <EmptyState />}
         </div>
       </div>
+      <SessionOutline scrollRef={scrollRef} />
       <JumpButton scrollRef={scrollRef} />
     </div>
   );

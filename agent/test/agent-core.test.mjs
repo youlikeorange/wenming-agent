@@ -157,6 +157,43 @@ test('场景 G：工具执行期间 abort → 返回 stopped 而非抛异常', a
   assert.ok(!out.content, '没有继续产出内容');
 });
 
+test('场景 G2：读流读到一半 abort（上游被掐断）→ 同样返回 stopped，已生成的内容保留', async () => {
+  /* 2026-10-01 用户报的「点停止没反应」在内核这一侧的一半：宿主 abort 之后，上游连接被掐断，
+     读流处会抛 AbortError（服务端是 run-upstream 的 AbortError，浏览器是 ApiError(aborted)）。
+     旧实现让这个异常直接冒出去，宿主只能按"请求失败"收尾——用户点了停止，却看到红色错误块。
+     现在与"两轮之间发现 abort"同一条出口：返回 stopped + 已生成内容。 */
+  const ac = new AbortController();
+  async function* cutMidStream() {
+    yield { type: 'content', text: '前半段' };
+    ac.abort();
+    throw Object.assign(new Error('已停止'), { name: 'AbortError', aborted: true });
+  }
+  const out = await Agent.run({
+    maxRounds: 6,
+    signal: ac.signal,
+    stream: () => cutMidStream(),
+    getSteering: () => [],
+    runTool: async () => ({ ok: true, text: '不该执行' }),
+  });
+  assert.equal(out.stopped, true, '返回 stopped=true（实际 ' + out.stopped + '）');
+  assert.equal(out.content, '前半段', '中断前生成的内容一个字都不丢（实际 ' + JSON.stringify(out.content) + '）');
+  assert.equal(out.rounds, 0, '停在中断的那一轮（实际 ' + out.rounds + '）');
+});
+
+test('场景 G3：不是中断的流错误照旧抛出去（别把真错误都吞成"已停止"）', async () => {
+  /* 上一条的反面：上游 500 / 网络故障没有 abort 信号，必须原样抛出——
+     否则真故障会被伪装成"用户停止"，错误在界面上再也看不见。 */
+  async function* boom() {
+    yield { type: 'content', text: '半句' };
+    throw new Error('上游 500：boom');
+  }
+  await assert.rejects(
+    () => Agent.run({ maxRounds: 2, stream: () => boom(), getSteering: () => [] }),
+    /上游 500：boom/,
+    '非中断错误必须抛出',
+  );
+});
+
 test('场景 H：只有思考、没有正文 → 算空回答，重试前追加提醒并拿到正文', async () => {
   /* 2026-09-22 用户报的"发出信息不调用 LLM"真身：模型思考完就停，正文一个字没写。
      旧判据（!roundContent && !roundThinking && !calls）把它当"回答完成"存下来，

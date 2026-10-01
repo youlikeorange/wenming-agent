@@ -1,6 +1,7 @@
 // Sidebar.jsx —— 左侧会话栏：品牌头、当前项目卡、当前模型卡、会话列表（按项目/时间分组）与本机账号绑定状态
 import { useState } from 'react';
 import { Archive, Bot, Check, ChevronDown, ChevronRight, FolderGit2, Home, MessageSquarePlus, Pencil } from 'lucide-react';
+import { Spinner } from '../components/ui/spinner.jsx';
 import { activeProvider, askConfirm, hooks } from '../state/host.js';
 import { archiveSession, newSession, openDrawer, renameSession, selectSession } from '../state/session.js';
 import { archiveProject } from '../state/projects.js';
@@ -108,7 +109,7 @@ function groupSessions(sessions, by, projects, currentProjectId) {
 /** 会话的"轮数" = 用户消息条数（侧栏副标题里那个 N 轮） */
 const rounds = (s) => (s.msgs || []).filter((m) => m.role === 'user').length;
 
-function SessionItem({ s, activeId, projectName, editingId, title, setTitle, startRename, commit, onNavigate }) {
+function SessionItem({ s, activeId, projectName, editingId, title, setTitle, startRename, commit, onNavigate, running }) {
   /* 改名框也走 IME 安全绑定（见 ime-field.jsx）：这里直接用 hook 保留原生 <input> 的样式 */
   const bind = useImeSafe(editingId === s.id ? title : '', (e) => setTitle(e.target.value));
   if (editingId === s.id) {
@@ -142,10 +143,12 @@ function SessionItem({ s, activeId, projectName, editingId, title, setTitle, sta
           : 'text-muted-foreground hover:bg-muted hover:text-foreground',
       )}
     >
+      {/* 正在生成的小标：多会话并行时，一眼看出"哪几条在跑"（切过去就能接着看） */}
+      {running ? <Spinner size="sm" title="正在生成回答" /> : null}
       <span className="min-w-0 flex-1">
         <span className="block truncate">{s.title || '新对话'}</span>
         <span className="block truncate text-[10.5px] text-subtle" title={fullTime(s.ts)}>
-          {timeAgo(s.ts)}{rounds(s) ? ` · ${rounds(s)} 轮` : ''}{projectName ? ` · ${projectName}` : ''}
+          {running ? '正在生成…' : timeAgo(s.ts)}{!running && rounds(s) ? ` · ${rounds(s)} 轮` : ''}{projectName ? ` · ${projectName}` : ''}
         </span>
       </span>
       <button
@@ -158,7 +161,7 @@ function SessionItem({ s, activeId, projectName, editingId, title, setTitle, sta
       </button>
       <button
         type="button"
-        title="归档这个对话（搬进存档，随时可在设置 → 存档里恢复）"
+        title={running ? '正在生成：先「停止」或等它跑完再归档' : '归档这个对话（搬进存档，随时可在设置 → 存档里恢复）'}
         onClick={(e) => { e.stopPropagation(); archiveSession(s.id); }}
         className="rounded p-0.5 opacity-0 transition-opacity hover:text-foreground group-hover/sess:opacity-100 touch-visible"
       >
@@ -168,7 +171,7 @@ function SessionItem({ s, activeId, projectName, editingId, title, setTitle, sta
   );
 }
 
-function SessionList({ sessions, activeId, projects, currentProjectId, groupBy, onGroupBy, onNavigate }) {
+function SessionList({ sessions, activeId, projects, currentProjectId, groupBy, onGroupBy, onNavigate, runs }) {
   const [editingId, setEditingId] = useState(null);
   const [title, setTitle] = useState('');
   const [collapsed, setCollapsed] = useState(() => new Set());
@@ -241,6 +244,7 @@ function SessionList({ sessions, activeId, projects, currentProjectId, groupBy, 
                     projectName={groupBy === 'time' ? ((byId.get(s.project || '') || {}).name || '') : ''}
                     editingId={editingId} title={title} setTitle={setTitle}
                     startRename={startRename} commit={commit} onNavigate={onNavigate}
+                    running={!!(runs && runs[s.id] && !runs[s.id].settled)}
                   />
                 ))}
               </div>
@@ -374,6 +378,7 @@ export default function Sidebar({ collapsed: collapsedProp, onNavigate, onOpenSe
         groupBy={groupBy}
         onGroupBy={(v) => setUi('sessionGroup', v)}
         onNavigate={onNavigate}
+        runs={st.runs}
       />
       <BindRow info={st.info} onLogin={onLogin} />
     </aside>

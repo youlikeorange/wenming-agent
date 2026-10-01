@@ -68,10 +68,30 @@ export async function listModels(cfg, signal) {
   return ids.sort();
 }
 
+/** 上游报错时把**它自己说的话**带上：只给一句"HTTP 401"，用户既不知道是密钥错了、
+ *  额度用完了还是模型名写错了，也就无从修起（2026-10-01：要求"LLM 出问题要能在会话里
+ *  反映出来"）。读一小段响应体，尽量抽出 error.message / message / detail，读不动就退回状态码。
+ *  这里是**失败响应**，没有 SSE 流要留给下游解析，把 body 读掉是安全的。 */
+function pickMessage(txt) {
+  try {
+    const j = JSON.parse(txt);
+    const m = (j && ((j.error && (j.error.message || j.error.type)) || j.message || j.detail)) || '';
+    if (m) return String(m).slice(0, 400);
+  } catch { /* 不是 JSON：当纯文本用 */ }
+  return txt.replace(/\s+/g, ' ').slice(0, 300);
+}
+
+async function errorText(r) {
+  const head = 'HTTP ' + r.status;
+  let txt = '';
+  try { txt = String(await r.text()).slice(0, 800); } catch { return head; }
+  return txt.trim() ? head + '：' + pickMessage(txt) : head;
+}
+
 export async function* chat(cfg, messages, params, opts = {}) {
   const body = buildBody(cfg, messages, params, opts);
   const r = await upstreamChat(refOf(cfg), body, opts.signal, opts.sessionId);
-  if (!r.ok) yield { type: 'error', message: 'HTTP ' + r.status };
+  if (!r.ok) yield { type: 'error', message: await errorText(r) };
   // 流式 tool_calls 分片累积（按 index 还原分片顺序）
   const acc = new Map();   // index -> {id,name,argsStr}
   const takeCalls = () => [...acc.entries()].sort((a, b) => a[0] - b[0]).map(([i, c]) => ({

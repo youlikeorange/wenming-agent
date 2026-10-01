@@ -279,6 +279,23 @@ const DEFAULTS = [
   { id: 'loop.budget_exec', group: 'loop', kind: 'loop', name: '命令执行次数用尽',
     desc: '单轮 run_command 次数达到上限后回的文本。',
     text: '本轮命令执行次数已达上限，请基于已有结果作答，或让用户调大「单轮命令上限」。' },
+  { id: 'loop.budget_subagent', group: 'loop', kind: 'loop', name: '子智能体次数用尽',
+    desc: '单轮 spawn_agent 次数达到上限后回的文本。',
+    text: '本轮派出的子智能体已达上限，请基于已有结果自己继续，或让用户调大「单轮最多派几次」。' },
+  { id: 'loop.subagent.intro', group: 'loop', kind: 'loop', name: '子智能体的角色说明',
+    desc: 'spawn_agent 起一段子智能体时，加在它 system 提示最前面的角色说明。',
+    text: '你是一个**子智能体**：被主对话派来完成一件独立的事，跑在你自己的上下文里。\n'
+      + '要求：\n'
+      + '1. 只做被派给你的事，不要扩大范围；用工具把事实查清楚再下结论。\n'
+      + '2. 不要向用户提问——没有人会回答你。信息不足时按最合理的假设继续，并在结论里说明假设。\n'
+      + '3. 最后用**一段话**交付结论：直接给结果与关键依据（路径、命令输出要点、数字），不要复述过程。\n'
+      + '4. 结论会原样带回主对话，所以别写"如上所述"这类依赖上下文的说法。' },
+  { id: 'loop.subagent.task', group: 'loop', kind: 'loop', name: '子智能体的任务包装',
+    desc: '把主对话派下来的任务包成子智能体的第一条用户消息（{task} 是任务本身）。',
+    text: '【子任务】{task}' },
+  { id: 'loop.subagent.note', group: 'loop', kind: 'loop', name: '子智能体结果的抬头',
+    desc: '子智能体返回结论时，主对话工具结果开头的说明（{label} 是标签或任务摘要，{rounds} 是它跑的轮数）。',
+    text: '子智能体「{label}」已完成（{rounds} 轮）。结论：' },
   { id: 'loop.plugin_off', group: 'loop', kind: 'loop', name: '插件已停用时的回话',
     desc: '用户把某个插件关掉后，模型仍调用该工具时回的文本（{name} 是工具名）。',
     text: '工具 {name} 所属的插件已被用户关闭（或未登录），不要再用它：请改用已提供的工具，或直接告诉用户你需要它。' },
@@ -323,263 +340,270 @@ const DEFAULTS = [
     desc: '把长文压成要点。', text: '把下面的内容总结成要点清单，保留关键数据与结论：\n\n{{内容}}' },
 ];
 
-/* ============================ 状态 ============================ */
+/* ============================ 实例 ============================ */
 
-const byId = new Map(DEFAULTS.map(d => [d.id, d]));
-/** 用户覆盖：{ id: { text?, enabled? } }；技能与模板是用户新增的条目（可删） */
-let overrides = {};
-let skills = [];        // { id, name, description, text, enabled, auto }  auto=true 表示模型可按需加载
-let extra = [];         // 用户新增的其它条目 { id, group, kind, name, desc, text }
+/** 造一份独立的提示词登记表实例（覆盖项 / 技能 / 自定义条目 / 订阅者都在闭包里）。
+ *  一份实例 = 一轮运行看到的提示词，于是多段运行可以并行：原先模块级单例会被后一轮的
+ *  load() 整份换掉（A 运行的 system 区块里混进 B 账号的提示词与技能），
+ *  见 lib/agent/run-registry.js 与 lib/agent/run-loop.js。
+ *  静态的 DEFAULTS / GROUP_TITLES / SYSTEM_PRESETS 不含状态，仍在模块级共用。 */
+/* eslint-disable-next-line max-lines-per-function -- 工厂函数装的是**整个模块体的实例**（内部结构一格没动，只是从模块级单例改成按需现造）：拆开反而让"一份实例的全部代码"散掉，见文件头的说明。 */
+export function createPrompts() {
+  const byId = new Map(DEFAULTS.map(d => [d.id, d]));
+  /** 用户覆盖：{ id: { text?, enabled? } }；技能与模板是用户新增的条目（可删） */
+  let overrides = {};
+  let skills = [];        // { id, name, description, text, enabled, auto }  auto=true 表示模型可按需加载
+  let extra = [];         // 用户新增的其它条目 { id, group, kind, name, desc, text }
 
-const emitChange = [];
+  const emitChange = [];
 
-/** 通知订阅者（宿主据此落盘 + 重绘）。**凡是会改数据的入口都必须调它**：
- *  漏调的后果是"改了没保存"——技能那条就踩过：skill_write 只调了宿主的 save（存的是**设置**），
- *  登记表自己没通知任何人，于是模型建的技能只活在内存里，刷新即丢。
- *  审计：原先旁边还有一个 `onDirty/markDirty` 回调链（全靠调用方自觉触发），全项目**从无订阅者**，
- *  已删除——落盘一律走 notify，只有这一条路。 */
-const notify = (id) => { emitChange.forEach(fn => { try { fn(id); } catch { /* 界面回调异常不影响数据 */ } }); };
+  /** 通知订阅者（宿主据此落盘 + 重绘）。**凡是会改数据的入口都必须调它**：
+   *  漏调的后果是"改了没保存"——技能那条就踩过：skill_write 只调了宿主的 save（存的是**设置**），
+   *  登记表自己没通知任何人，于是模型建的技能只活在内存里，刷新即丢。
+   *  审计：原先旁边还有一个 `onDirty/markDirty` 回调链（全靠调用方自觉触发），全项目**从无订阅者**，
+   *  已删除——落盘一律走 notify，只有这一条路。 */
+  const notify = (id) => { emitChange.forEach(fn => { try { fn(id); } catch { /* 界面回调异常不影响数据 */ } }); };
 
-/* ============================ 取值 / 写入 ============================ */
+  /* ============================ 取值 / 写入 ============================ */
 
-const isOff = (id) => overrides[id] && overrides[id].enabled === false;
+  const isOff = (id) => overrides[id] && overrides[id].enabled === false;
 
-/** 某条目的最终文本：用户覆盖 > 内置默认（空串 = 用户明确要求为空） */
-function text(id) {
-  const o = overrides[id];
-  if (o && typeof o.text === 'string') return o.text;
-  const d = byId.get(id);
-  return d ? d.text : '';
-}
-/** 条目的"用途/描述"：内置条目允许用 <id>.desc 覆盖（技能清单与 <skill> 标签都用它） */
-function descText(id, fallback) {
-  const o = overrides[id + '.desc'];
-  if (o && typeof o.text === 'string') return o.text;
-  return fallback || '';
-}
+  /** 某条目的最终文本：用户覆盖 > 内置默认（空串 = 用户明确要求为空） */
+  function text(id) {
+    const o = overrides[id];
+    if (o && typeof o.text === 'string') return o.text;
+    const d = byId.get(id);
+    return d ? d.text : '';
+  }
+  /** 条目的"用途/描述"：内置条目允许用 <id>.desc 覆盖（技能清单与 <skill> 标签都用它） */
+  function descText(id, fallback) {
+    const o = overrides[id + '.desc'];
+    if (o && typeof o.text === 'string') return o.text;
+    return fallback || '';
+  }
 
-const isDefault = (id) => {
-  const o = overrides[id]; const d = byId.get(id);
-  return !o || (o.text === undefined || o.text === d.text);
-};
-const enabled = (id) => !isOff(id);
+  const isDefault = (id) => {
+    const o = overrides[id]; const d = byId.get(id);
+    return !o || (o.text === undefined || o.text === d.text);
+  };
+  const enabled = (id) => !isOff(id);
 
-/** 写入覆盖（空串也表示"用户改过"，与默认不同就是 dirty） */
-function set(id, value, on) {
-  const o = overrides[id] || (overrides[id] = {});
-  if (value !== undefined) o.text = String(value);
-  if (on !== undefined) o.enabled = !!on;
-  if (o.text === undefined && o.enabled === undefined) delete overrides[id];
-  notify(id);
-}
-const setEnabled = (id, on) => set(id, undefined, on);
-const reset = (id) => {
-  const d = byId.get(id);
-  if (d) overrides[id] = { text: d.text, enabled: true };   // 恢复默认 = 与默认一致
-  else delete overrides[id];
-  notify(id);
-};
+  /** 写入覆盖（空串也表示"用户改过"，与默认不同就是 dirty） */
+  function set(id, value, on) {
+    const o = overrides[id] || (overrides[id] = {});
+    if (value !== undefined) o.text = String(value);
+    if (on !== undefined) o.enabled = !!on;
+    if (o.text === undefined && o.enabled === undefined) delete overrides[id];
+    notify(id);
+  }
+  const setEnabled = (id, on) => set(id, undefined, on);
+  const reset = (id) => {
+    const d = byId.get(id);
+    if (d) overrides[id] = { text: d.text, enabled: true };   // 恢复默认 = 与默认一致
+    else delete overrides[id];
+    notify(id);
+  };
 
-/* ============================ 条目清单（面板与注入都从这里取） ============================ */
+  /* ============================ 条目清单（面板与注入都从这里取） ============================ */
 
-const GROUP_TITLES = {
-  system: '① 系统区块（按顺序拼成 system）',
-  skills: '② 技能（Skills：常驻直接注入，按需由模型 use_skill 加载；联网搜索也是一份内置技能）',
-  tools: '③ 工具说明',
-  loop: '④ 循环内提示（工具结果 / 插话 / 截断保护）',
-  compact: '⑤ 上下文压缩',
-  templates: '⑥ 提示词模板（输入框打 / 触发，不注入系统提示）',
-};
+  const GROUP_TITLES = {
+    system: '① 系统区块（按顺序拼成 system）',
+    skills: '② 技能（Skills：常驻直接注入，按需由模型 use_skill 加载；联网搜索也是一份内置技能）',
+    tools: '③ 工具说明',
+    loop: '④ 循环内提示（工具结果 / 插话 / 截断保护）',
+    compact: '⑤ 上下文压缩',
+    templates: '⑥ 提示词模板（输入框打 / 触发，不注入系统提示）',
+  };
 
-/** 全部条目（内置 + 用户新增 + 技能），按注入顺序分组 */
-function all() {
-  const list = DEFAULTS.concat(extra).map(d => Object.assign({}, d, {
-    desc: descText(d.id, d.desc),
-    text: text(d.id), enabled: enabled(d.id), isDefault: isDefault(d.id),
-    overridden: !!overrides[d.id] && overrides[d.id].text !== undefined && overrides[d.id].text !== d.text,
-    auto: d.auto,                       // 内置技能（如联网搜索）的常驻/按需
-    builtin: !!d.builtin,
-  }));
-  const skillItems = skills.map(s => ({
-    id: s.id, group: 'skills', kind: 'skill', name: s.name, desc: s.description,
-    text: s.text, enabled: s.enabled !== false, isDefault: false, overridden: false,
-    auto: s.auto !== false, custom: true,
-  }));
-  return list.concat(skillItems);
-}
+  /** 全部条目（内置 + 用户新增 + 技能），按注入顺序分组 */
+  function all() {
+    const list = DEFAULTS.concat(extra).map(d => Object.assign({}, d, {
+      desc: descText(d.id, d.desc),
+      text: text(d.id), enabled: enabled(d.id), isDefault: isDefault(d.id),
+      overridden: !!overrides[d.id] && overrides[d.id].text !== undefined && overrides[d.id].text !== d.text,
+      auto: d.auto,                       // 内置技能（如联网搜索）的常驻/按需
+      builtin: !!d.builtin,
+    }));
+    const skillItems = skills.map(s => ({
+      id: s.id, group: 'skills', kind: 'skill', name: s.name, desc: s.description,
+      text: s.text, enabled: s.enabled !== false, isDefault: false, overridden: false,
+      auto: s.auto !== false, custom: true,
+    }));
+    return list.concat(skillItems);
+  }
 
-/** 系统区块（真正发给模型的 system 拼接顺序） */
-function systemBlocks() {
-  const blocks = [];
-  all().forEach(e => {
-    if (!e.enabled) return;
-    if (e.kind === 'system') { if (String(e.text).trim()) blocks.push({ id: e.id, title: e.name, text: e.text }); return; }
-    if (e.kind === 'tool') { if (String(e.text).trim()) blocks.push({ id: e.id, title: '工具说明 · ' + e.name, text: e.text }); return; }
-    if (e.kind === 'skill' && e.auto === false) {          // 常驻技能：正文直接注入
-      if (String(e.text).trim()) blocks.push({ id: e.id, title: '技能 · ' + e.name, text: skillTag(e) });
+  /** 系统区块（真正发给模型的 system 拼接顺序） */
+  function systemBlocks() {
+    const blocks = [];
+    all().forEach(e => {
+      if (!e.enabled) return;
+      if (e.kind === 'system') { if (String(e.text).trim()) blocks.push({ id: e.id, title: e.name, text: e.text }); return; }
+      if (e.kind === 'tool') { if (String(e.text).trim()) blocks.push({ id: e.id, title: '工具说明 · ' + e.name, text: e.text }); return; }
+      if (e.kind === 'skill' && e.auto === false) {          // 常驻技能：正文直接注入
+        if (String(e.text).trim()) blocks.push({ id: e.id, title: '技能 · ' + e.name, text: skillTag(e) });
+      }
+    });
+    return blocks;
+  }
+
+  /** 按 agentskills.io 规范包技能：<skill name="…" description="…">正文</skill>
+   *  description 优先取用户覆盖（<id>.desc），所以内置技能的"用途"也能在界面上改。 */
+  const skillTag = (s) => {
+    const d = descText(s.id, s.desc || s.description || '');
+    return `<skill name="${String(s.name || '').replace(/"/g, "'")}" description="${String(d).replace(/"/g, "'")}">\n${s.text}\n</skill>`;
+  };
+
+  /** 按需技能的清单（只给名字与用途，正文等模型 use_skill 时才给）。
+   *  注意别写成 `s.auto !== true === false`：=== 与 !== 同优先级、左结合，
+   *  实际算的是 `(s.auto !== true) === false` —— auto 一旦不是严格布尔就语义反转。 */
+  const onDemandSkills = () => skills.filter(s => s.enabled !== false && s.auto !== false && String(s.text).trim());
+
+  /** 技能清单区块（有按需技能时追加到 system 末尾） */
+  function skillIndexBlock() {
+    const list = onDemandSkills();          // 判据与 use_skill 的可加载集合同源（不写第二份）
+    if (!list.length || !enabled('system.skill_index.intro')) return null;
+    const lines = list.map(s => `- ${s.name}：${s.description || '(未写用途)'}` + (loadedSkills.has(s.id) ? '（本轮已加载）' : ''));
+    return { id: 'system.skill_index', title: '可用技能清单', text: text('system.skill_index.intro') + '\n' + lines.join('\n') };
+  }
+
+  /* ============================ 技能：按需加载（Pi 的 progressive disclosure） ============================ */
+
+  const loadedSkills = new Set();          // 本次会话里已加载的技能 id
+  const markLoaded = (id) => loadedSkills.add(id);
+  /** 清空「本轮已加载」标记。换会话 / 清空对话 / 重新登录后必须调：
+   *  技能正文只存在于当次 use_skill 的工具结果里，新会话根本没给过——标记不清的话
+   *  技能清单会一直显示「（本轮已加载）」，模型据此以为正文还在上下文里，可能凭名字编步骤。
+   *  （此前 clearLoaded 是"定义了、导出了、全项目零调用"的死代码，本函数即为此补的接线。） */
+  const clearLoaded = () => loadedSkills.clear();
+  const loadedList = () => [...loadedSkills];
+
+  function findSkill(ref) {
+    const key = String(ref || '').trim().toLowerCase();
+    return skills.find(s => s.enabled !== false && (s.name.toLowerCase() === key || s.id.toLowerCase() === key)) || null;
+  }
+
+  /* ============================ 提示词模板（{{变量}} 插值） ============================ */
+
+  const templates = () => all().filter(e => e.kind === 'template' && e.enabled && String(e.text).trim());
+  const TEMPLATE_VAR = /\{\{\s*([^}]+?)\s*\}\}/g;
+  /** 模板里出现过哪些变量名（去重，保持出现顺序）。
+   *  参数不叫 text：本模块有个模块级 `text(id)`，同名遮蔽会让读者以为这里在调它。 */
+  const templateVars = (tplText) => {
+    const out = [];
+    String(tplText || '').replace(TEMPLATE_VAR, (m, k) => { if (!out.includes(k)) out.push(k); return m; });
+    return out;
+  };
+  /** 变量填值；返回 { text, missing:[未填的变量] }。
+   *  局部变量**不叫 text**：本模块另有一个模块级 `text(id)`（取某条提示词的最终文本），
+   *  同名遮蔽会让读者以为这里在调它（eslint no-shadow 也这么判）。 */
+  function applyTemplate(tpl, args) {
+    const missing = [];
+    const filled = String(tpl.text).replace(TEMPLATE_VAR, (m, k) => {
+      const v = args && args[k];
+      if (v === undefined || v === '') { missing.push(k); return m; }
+      return v;
+    });
+    return { text: filled, missing };
+  }
+
+  /* 注：这里原有 adoptLegacy()——把 2.0 之前存在 S.params 里的提示词搬进登记表的一次性迁移。
+    界面上的「恢复默认」早已覆盖了它的作用，函数全项目零调用（审计时删除）。
+    旧装机若还有 params.systemPrompt 等字段，它们会留在 settings.params 里不影响使用。 */
+
+  /** 序列化进 settings.prompts（存服务器端，按身份隔离） */
+  const serialize = () => ({
+    overrides: JSON.parse(JSON.stringify(overrides)),
+    skills: skills.map(s => ({ id: s.id, name: s.name, description: s.description, text: s.text, enabled: s.enabled !== false, auto: s.auto !== false })),
+    extra: extra.map(e => ({ id: e.id, group: e.group, kind: e.kind, name: e.name, desc: e.desc, text: e.text })),
+  });
+
+  function load(data) {
+    overrides = {};
+    skills = [];
+    extra = [];
+    if (!data || typeof data !== 'object') return;
+    if (data.overrides && typeof data.overrides === 'object') {
+      for (const [id, o] of Object.entries(data.overrides)) {
+        if (!o || typeof o !== 'object') continue;
+        const rec = {};
+        if (typeof o.text === 'string') rec.text = o.text;
+        if (typeof o.enabled === 'boolean') rec.enabled = o.enabled;
+        if (Object.keys(rec).length) overrides[id] = rec;
+      }
     }
-  });
-  return blocks;
-}
-
-/** 按 agentskills.io 规范包技能：<skill name="…" description="…">正文</skill>
- *  description 优先取用户覆盖（<id>.desc），所以内置技能的"用途"也能在界面上改。 */
-const skillTag = (s) => {
-  const d = descText(s.id, s.desc || s.description || '');
-  return `<skill name="${String(s.name || '').replace(/"/g, "'")}" description="${String(d).replace(/"/g, "'")}">\n${s.text}\n</skill>`;
-};
-
-/** 按需技能的清单（只给名字与用途，正文等模型 use_skill 时才给）。
- *  注意别写成 `s.auto !== true === false`：=== 与 !== 同优先级、左结合，
- *  实际算的是 `(s.auto !== true) === false` —— auto 一旦不是严格布尔就语义反转。 */
-const onDemandSkills = () => skills.filter(s => s.enabled !== false && s.auto !== false && String(s.text).trim());
-
-/** 技能清单区块（有按需技能时追加到 system 末尾） */
-function skillIndexBlock() {
-  const list = onDemandSkills();          // 判据与 use_skill 的可加载集合同源（不写第二份）
-  if (!list.length || !enabled('system.skill_index.intro')) return null;
-  const lines = list.map(s => `- ${s.name}：${s.description || '(未写用途)'}` + (loadedSkills.has(s.id) ? '（本轮已加载）' : ''));
-  return { id: 'system.skill_index', title: '可用技能清单', text: text('system.skill_index.intro') + '\n' + lines.join('\n') };
-}
-
-/* ============================ 技能：按需加载（Pi 的 progressive disclosure） ============================ */
-
-const loadedSkills = new Set();          // 本次会话里已加载的技能 id
-const markLoaded = (id) => loadedSkills.add(id);
-/** 清空「本轮已加载」标记。换会话 / 清空对话 / 重新登录后必须调：
- *  技能正文只存在于当次 use_skill 的工具结果里，新会话根本没给过——标记不清的话
- *  技能清单会一直显示「（本轮已加载）」，模型据此以为正文还在上下文里，可能凭名字编步骤。
- *  （此前 clearLoaded 是"定义了、导出了、全项目零调用"的死代码，本函数即为此补的接线。） */
-const clearLoaded = () => loadedSkills.clear();
-const loadedList = () => [...loadedSkills];
-
-function findSkill(ref) {
-  const key = String(ref || '').trim().toLowerCase();
-  return skills.find(s => s.enabled !== false && (s.name.toLowerCase() === key || s.id.toLowerCase() === key)) || null;
-}
-
-/* ============================ 提示词模板（{{变量}} 插值） ============================ */
-
-const templates = () => all().filter(e => e.kind === 'template' && e.enabled && String(e.text).trim());
-const TEMPLATE_VAR = /\{\{\s*([^}]+?)\s*\}\}/g;
-/** 模板里出现过哪些变量名（去重，保持出现顺序）。
- *  参数不叫 text：本模块有个模块级 `text(id)`，同名遮蔽会让读者以为这里在调它。 */
-const templateVars = (tplText) => {
-  const out = [];
-  String(tplText || '').replace(TEMPLATE_VAR, (m, k) => { if (!out.includes(k)) out.push(k); return m; });
-  return out;
-};
-/** 变量填值；返回 { text, missing:[未填的变量] }。
- *  局部变量**不叫 text**：本模块另有一个模块级 `text(id)`（取某条提示词的最终文本），
- *  同名遮蔽会让读者以为这里在调它（eslint no-shadow 也这么判）。 */
-function applyTemplate(tpl, args) {
-  const missing = [];
-  const filled = String(tpl.text).replace(TEMPLATE_VAR, (m, k) => {
-    const v = args && args[k];
-    if (v === undefined || v === '') { missing.push(k); return m; }
-    return v;
-  });
-  return { text: filled, missing };
-}
-
-/* 注：这里原有 adoptLegacy()——把 2.0 之前存在 S.params 里的提示词搬进登记表的一次性迁移。
-  界面上的「恢复默认」早已覆盖了它的作用，函数全项目零调用（审计时删除）。
-  旧装机若还有 params.systemPrompt 等字段，它们会留在 settings.params 里不影响使用。 */
-
-/** 序列化进 settings.prompts（存服务器端，按身份隔离） */
-const serialize = () => ({
-  overrides: JSON.parse(JSON.stringify(overrides)),
-  skills: skills.map(s => ({ id: s.id, name: s.name, description: s.description, text: s.text, enabled: s.enabled !== false, auto: s.auto !== false })),
-  extra: extra.map(e => ({ id: e.id, group: e.group, kind: e.kind, name: e.name, desc: e.desc, text: e.text })),
-});
-
-function load(data) {
-  overrides = {};
-  skills = [];
-  extra = [];
-  if (!data || typeof data !== 'object') return;
-  if (data.overrides && typeof data.overrides === 'object') {
-    for (const [id, o] of Object.entries(data.overrides)) {
-      if (!o || typeof o !== 'object') continue;
-      const rec = {};
-      if (typeof o.text === 'string') rec.text = o.text;
-      if (typeof o.enabled === 'boolean') rec.enabled = o.enabled;
-      if (Object.keys(rec).length) overrides[id] = rec;
+    if (Array.isArray(data.skills)) {
+      skills = data.skills.filter(s => s && s.id && s.name).map(s => ({
+        id: String(s.id), name: String(s.name), description: String(s.description || ''),
+        text: String(s.text || ''), enabled: s.enabled !== false, auto: s.auto !== false,
+      }));
+      skills.forEach(s => byId.set(s.id, { id: s.id, group: 'skills', kind: 'skill', name: s.name, desc: s.description, text: s.text }));
+    }
+    if (Array.isArray(data.extra)) {
+      extra = data.extra.filter(e => e && e.id && e.name).map(e => ({
+        id: String(e.id), group: ['system', 'tools', 'loop', 'compact'].includes(e.group) ? e.group : 'system',
+        kind: ['system', 'tool', 'loop', 'compact', 'template'].includes(e.kind) ? e.kind : 'system',
+        name: String(e.name), desc: String(e.desc || ''), text: String(e.text || ''),
+      }));
+      extra.forEach(e => byId.set(e.id, e));
     }
   }
-  if (Array.isArray(data.skills)) {
-    skills = data.skills.filter(s => s && s.id && s.name).map(s => ({
-      id: String(s.id), name: String(s.name), description: String(s.description || ''),
+
+  /* ============================ 技能 / 条目的增删 ============================ */
+
+  const newId = (p) => p + '-' + Math.random().toString(36).slice(2, 8);
+
+  function addSkill(s) {
+    const item = {
+      id: newId('sk'), name: String(s.name || '新技能').slice(0, 60),
+      description: String(s.description || '').slice(0, 300),
       text: String(s.text || ''), enabled: s.enabled !== false, auto: s.auto !== false,
-    }));
-    skills.forEach(s => byId.set(s.id, { id: s.id, group: 'skills', kind: 'skill', name: s.name, desc: s.description, text: s.text }));
+    };
+    skills.push(item);
+    byId.set(item.id, { id: item.id, group: 'skills', kind: 'skill', name: item.name, desc: item.description, text: item.text });
+    notify(item.id);
+    return item;
   }
-  if (Array.isArray(data.extra)) {
-    extra = data.extra.filter(e => e && e.id && e.name).map(e => ({
-      id: String(e.id), group: ['system', 'tools', 'loop', 'compact'].includes(e.group) ? e.group : 'system',
+  function updateSkill(id, patch) {
+    const s = skills.find(x => x.id === id); if (!s) return null;
+    Object.assign(s, {
+      name: patch.name !== undefined ? String(patch.name).slice(0, 60) : s.name,
+      description: patch.description !== undefined ? String(patch.description).slice(0, 300) : s.description,
+      text: patch.text !== undefined ? String(patch.text) : s.text,
+      enabled: patch.enabled !== undefined ? !!patch.enabled : s.enabled,
+      auto: patch.auto !== undefined ? !!patch.auto : s.auto,
+    });
+    const d = byId.get(id); if (d) { d.name = s.name; d.desc = s.description; d.text = s.text; }
+    notify(id);
+    return s;
+  }
+  function removeSkill(id) {
+    skills = skills.filter(s => s.id !== id);
+    byId.delete(id);
+    delete overrides[id];
+    notify(id);
+  }
+
+  function addEntry(e) {
+    const item = {
+      id: newId('px'), group: ['system', 'tools', 'loop', 'compact'].includes(e.group) ? e.group : 'system',
       kind: ['system', 'tool', 'loop', 'compact', 'template'].includes(e.kind) ? e.kind : 'system',
-      name: String(e.name), desc: String(e.desc || ''), text: String(e.text || ''),
-    }));
-    extra.forEach(e => byId.set(e.id, e));
+      name: String(e.name || '新条目').slice(0, 60), desc: String(e.desc || ''), text: String(e.text || ''),
+    };
+    extra.push(item);
+    byId.set(item.id, item);
+    notify(item.id);
+    return item;
   }
-}
-
-/* ============================ 技能 / 条目的增删 ============================ */
-
-const newId = (p) => p + '-' + Math.random().toString(36).slice(2, 8);
-
-function addSkill(s) {
-  const item = {
-    id: newId('sk'), name: String(s.name || '新技能').slice(0, 60),
-    description: String(s.description || '').slice(0, 300),
-    text: String(s.text || ''), enabled: s.enabled !== false, auto: s.auto !== false,
+  const removeEntry = (id) => {
+    extra = extra.filter(e => e.id !== id);
+    byId.delete(id);
+    delete overrides[id];
+    notify(id);
   };
-  skills.push(item);
-  byId.set(item.id, { id: item.id, group: 'skills', kind: 'skill', name: item.name, desc: item.description, text: item.text });
-  notify(item.id);
-  return item;
-}
-function updateSkill(id, patch) {
-  const s = skills.find(x => x.id === id); if (!s) return null;
-  Object.assign(s, {
-    name: patch.name !== undefined ? String(patch.name).slice(0, 60) : s.name,
-    description: patch.description !== undefined ? String(patch.description).slice(0, 300) : s.description,
-    text: patch.text !== undefined ? String(patch.text) : s.text,
-    enabled: patch.enabled !== undefined ? !!patch.enabled : s.enabled,
-    auto: patch.auto !== undefined ? !!patch.auto : s.auto,
-  });
-  const d = byId.get(id); if (d) { d.name = s.name; d.desc = s.description; d.text = s.text; }
-  notify(id);
-  return s;
-}
-function removeSkill(id) {
-  skills = skills.filter(s => s.id !== id);
-  byId.delete(id);
-  delete overrides[id];
-  notify(id);
-}
 
-function addEntry(e) {
-  const item = {
-    id: newId('px'), group: ['system', 'tools', 'loop', 'compact'].includes(e.group) ? e.group : 'system',
-    kind: ['system', 'tool', 'loop', 'compact', 'template'].includes(e.kind) ? e.kind : 'system',
-    name: String(e.name || '新条目').slice(0, 60), desc: String(e.desc || ''), text: String(e.text || ''),
-  };
-  extra.push(item);
-  byId.set(item.id, item);
-  notify(item.id);
-  return item;
-}
-const removeEntry = (id) => {
-  extra = extra.filter(e => e.id !== id);
-  byId.delete(id);
-  delete overrides[id];
-  notify(id);
-};
+/* ============================ 对外接口 ============================ */
 
-/* ============================ 与宿主应用的接口 ============================ */
-
-export const Prompts = {
+return {
   // 读取
   text, enabled, all, systemBlocks, skillIndexBlock, templates, templateVars, applyTemplate,
   groupTitles: GROUP_TITLES, onDemandSkills, loadedList, findSkill,
@@ -588,7 +612,8 @@ export const Prompts = {
      托管运行（lib/agent/run.js）是"一次运行 = 注册一次"的用法，不退订就会：
        · 回调越积越多 → 每改一次数据写 N 遍磁盘；
        · 更严重的是回调闭包捕获了**注册那次运行的账号**，于是 A 跑完、B 再跑时，
-         B 的数据会被 A 那个回调写进 A 的账号文件（跨账号覆盖写，2026-10-01 实测复现）。 */
+         B 的数据会被 A 那个回调写进 A 的账号文件（跨账号覆盖写，2026-10-01 实测复现）。
+     实例本身也按运行隔离（一份实例一组订阅者），这道退订纪律依旧是第二道保险。 */
   set, setEnabled, reset, serialize, load,
   onChange: (fn) => {
     emitChange.push(fn);
@@ -600,4 +625,8 @@ export const Prompts = {
   markLoaded, clearLoaded,
   presets: SYSTEM_PRESETS,
 };
+}
+
+/** 默认实例：界面与单测用的那一份（生命周期与页面/进程同长） */
+export const Prompts = createPrompts();
 

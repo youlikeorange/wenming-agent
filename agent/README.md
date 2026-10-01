@@ -7,7 +7,7 @@
 npm install            # 首次
 npm run build          # 产出 ../public/llm-chat/vendor/{agent.js,agent.css}
 npm run watch          # 监听 JS 改动（CSS 改动仍需重跑一次 build）
-npm test               # node --test：110 个用例
+npm test               # node --test：198 个用例
 npm run lint           # eslint（显式开 no-undef）
 npm run dup            # jscpd：重复代码块
 npm run cycles         # madge：模块环
@@ -15,6 +15,11 @@ npm run check          # 四件套一起跑
 ```
 
 审计记录（每一轮改了什么、为什么、怎么验证的）在 [AUDIT.md](./AUDIT.md)。
+
+**查字典的文档**：[docs/MODULE-MAP.md](./docs/MODULE-MAP.md) —— 模块 / 端点 / 数据地图：
+前端状态字段 ↔ 端点 ↔ 磁盘文件对照、每个端点的请求/响应、提示词登记表（技能）的完整数据流、
+"改某个功能要动哪几个文件"的落点表、以及每条都真踩过的坑。**改代码前先看它**，能省一遍通读；
+流程与启动顺序看 [ARCHITECTURE.md](./ARCHITECTURE.md)。
 
 ## 目录
 
@@ -50,13 +55,41 @@ src/ui/                  React 界面
   features/settings/       设置抽屉的十个分区（含 项目 / 存档）+ 共用零件（parts.jsx）
   components/ui/           shadcn 风格基础组件（只留本界面真正用到的那些）
 
-test/                    node --test 用例（119 个）
+test/                    node --test 用例（186 个，含并行会话与子智能体的行为回归）
 build.mjs                构建脚本（esbuild + Tailwind CLI）
 ```
 
 服务端在仓库根的 `lib/agent/`：公共件 `lib/lock.js`（按键串行锁的唯一实现）、
 `lib/agent/lock.js` 已并入它；请求体上限的真源是 `lib/agent/store.js` 的 `MAX_BODY_BYTES`
 （路由层引用它，不许再写死数字）。
+
+## 多会话并行 · 子智能体 · 统一事件口（2026-10-01）
+
+**并行**：服务端可以同时跑多段运行——一条会话一段，每个账号最多 3 段、全进程最多 8 段
+（`AGENT_RUNS_PER_ACCOUNT` / `AGENT_RUNS_TOTAL` 可调）。界面因此**生成中也能切会话、也能新建对话**：
+`state.streaming` 的含义收窄成"**当前这条**会话正在生成"，别的会话在跑不挡你任何操作（侧栏会转圈标记）。
+实现要点：每段运行持有自己的 core 实例（`createCoreContext()`），所以登记表/记忆/上下文互不串。
+
+**统一事件口**：界面只连一条 SSE（`GET /agent/run/hub`），它推本账号**全部**运行的事件，
+每条事件带 `runId / sessionId / liveId`——客户端据此把事件写回"它那条会话"的助手消息。
+`GET /agent/run/events?id=` 仍保留（单段诊断用），界面不再使用。
+
+**子智能体**（`spawn_agent`）：模型可以把一件独立的事派给子智能体——它跑在**自己的上下文**里，
+默认**只读**（读文件/找文件/联网搜索/查记忆/加载技能），**不能**再派子智能体；结论作为工具结果回到主对话，
+过程实时显示在那张"👥 子智能体"卡上（可点「查看子智能体记录」看完整转录）。
+参数在「设置 → 权限与工具 → 子智能体」：开关、单轮最多派几次、同时最多几个、每个最多几轮、是否允许它改东西；
+`spawn_agent` 自己也接受 `label / max_rounds / allow_write / provider`（工具参数只能更严，不能更松）。
+
+**传输文件（待下载）**：每个账号在服务端有一个待下载目录（`STATE_DIR/agent/<账号>/downloads/`）。
+模型用 `deliver_file` 把产出物放进去；界面顶栏的「📥 待下载」菜单列全部内容（点一下就下载），
+会话里那张工具卡片上也有同样的下载链接——两处都是**普通 `<a href download>` 链接**直连
+`GET /agent/files/download?name=`（浏览器自己下载，不经 JS 中转）。
+**可执行文件不给裸的**：发布时就打包成 `<名>.zip`（目录里根本不出现裸的可执行文件），
+下载时再兜一道（手动拷进来的也会现打成 zip）；判据 = 有执行位或扩展名在黑名单（exe/sh/apk/…）。
+它在「设置 → 权限与工具 → 文件与目录」里可以关（`plugin_deliver_on`），读取路径走与读文件同一套闸门。
+
+**LLM 出错要在会话里看得见**：上游报错 → 会话里出现红色错误块（带**上游自己说的话**，如
+`HTTP 401：Missing or invalid API key…`）+ 「重试这一轮」；错误会落盘（刷新后还在），侧栏那条会话也会标出来。
 
 ## 六条要记住的约定
 

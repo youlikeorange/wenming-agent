@@ -1,8 +1,9 @@
 // Header.jsx —— 顶栏：折叠侧栏、标题与连接状态、上下文用量环、最近一轮统计、访问级别徽章与操作按钮
-import { FolderGit2, PanelLeft, Settings, Trash2, Undo2, UserRound } from 'lucide-react';
+import { FolderGit2, PackageOpen, PanelLeft, Settings, Trash2, Undo2, UserRound } from 'lucide-react';
 import { AgentPolicy } from '../../core/policy.js';
 import { activeProvider, accessOf, hooks, askConfirm } from '../state/host.js';
 import { clearChat, openDrawer, undoLast } from '../state/session.js';
+import { openDownloads } from '../state/downloads.js';
 import { patch, useApp } from '../state/store.js';
 import { cn } from '../lib/utils.js';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../components/ui/dropdown-menu.jsx';
@@ -95,6 +96,7 @@ export default function Header({ sidebarCollapsed, onToggleSidebar, phone }) {
     if (r.ok) clearChat();
   };
 
+  const dlCount = ((st.downloads || {}).entries || []).length;
   const user = st.info && st.info.user;
   const userName = user ? (user.name || user.username || user.osUser || '已登录') : '';
   const project = (st.projects || []).find((p) => p.id === st.currentProjectId) || null;
@@ -133,6 +135,19 @@ export default function Header({ sidebarCollapsed, onToggleSidebar, phone }) {
       ) : null}
       <ContextMeter />
       <AccessBadge />
+      {/* 📥 待下载：模型交给用户的文件都在这儿（带数量小标；点开就是下载链接） */}
+      <IconBtn
+        title="待下载文件（模型用 deliver_file 放进来的产出物；可执行文件已打包成 zip）"
+        onClick={() => openDownloads()}
+        className={cn('relative', phone ? 'size-10' : undefined)}
+      >
+        <PackageOpen className="size-4" />
+        {dlCount > 0 ? (
+          <span className="absolute -right-0.5 -top-0.5 grid min-w-4 place-items-center rounded-full bg-primary px-1 text-[9px] font-semibold leading-4 text-primary-foreground">
+            {dlCount > 99 ? '99+' : dlCount}
+          </span>
+        ) : null}
+      </IconBtn>
 
       <IconBtn
         title={user ? `已登录：${userName}（点击可切换账号）` : '登录（记忆、技能、会话按登录身份存服务器端）'}

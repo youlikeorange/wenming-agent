@@ -22,9 +22,23 @@
  *  （旧实现留着一个只写不读的 Providers 注入点，审计时删掉）。
  */
 
-/** 结果对象：把工具输出归一成 { ok, text, note } */
+/** 结果对象：把工具输出归一成 { ok, text, note, files? }
+ *  files = **可下载文件清单**（deliver_file 这类"把文件交给用户"的工具才有）：
+ *  白名单式保留（只认 name/size/exec/packaged/source/note），内核不认识它的语义，
+ *  只负责让它一路传到追踪条上——界面据此画那张文件卡片（见 ui/features/TraceStrip.jsx）。 */
+const FILE_KEYS = ['name', 'size', 'exec', 'packaged', 'source', 'note'];
+const asFiles = (list) => (Array.isArray(list) ? list.slice(0, 20).map((f) => {
+  const out = {};
+  for (const k of FILE_KEYS) if (f && f[k] !== undefined) out[k] = f[k];
+  return out;
+}).filter((f) => f.name) : null);
 const asResult = (r) => {
-  if (r && typeof r === 'object') return { ok: r.ok !== false, text: String(r.text ?? ''), note: r.note || '' };
+  if (r && typeof r === 'object') {
+    const out = { ok: r.ok !== false, text: String(r.text ?? ''), note: r.note || '' };
+    const files = asFiles(r.files);
+    if (files && files.length) out.files = files;
+    return out;
+  }
   return { ok: true, text: String(r ?? ''), note: '' };
 };
 
@@ -98,9 +112,43 @@ const toMessages = (items) => (items || []).map((m) => (typeof m === 'string' ? 
  *        onNotice 的 kind 是结构化的：'empty_retry' | 'truncated' | 'max_rounds' | 'error'（error 同时会 throw）
  *        ——宿主按 kind 决定呈现，不要去匹配文案（文案随时会改）。
  */
+/** 这个异常是不是"用户要求的中断"（宿主 abort / 读取端抛出的 AbortError）。
+ *  四个来源都要认：宿主给的 signal、浏览器的 ApiError（带 aborted:true）、
+ *  服务端的 AbortError、以及"连接被掐断"那条兜底错误（也带 aborted:true）。 */
+const isAbort = (e, signal) => !!((signal && signal.aborted)
+  || (e && (e.name === 'AbortError' || e.aborted === true)));
+
+/** 调一个宿主钩子；钩子自己出错不能带崩整个循环 */
+const call = (fn, ...a) => { try { return fn && fn(...a); } catch (e) { console.warn('[agent] hook error', e); } };
+
+/** 读一轮的流式输出：正文/思考/统计/工具调用，边读边把增量交给宿主（onDelta）。
+ *
+ *  **中断不是失败**：用户点「停止」时宿主 abort，上游连接随之被掐断，读流处会抛
+ *  AbortError（服务端是 run-upstream 的 AbortError，浏览器是 ApiError(aborted)）。
+ *  这里把它收成 `stopped=true` 交回调用方——已生成的内容一个字不丢，宿主按"已停止生成"
+ *  收尾；其它错误一律抛出（真故障不许被伪装成"用户停止"，那样错误就再也看不见了）。 */
+async function readRound(cfg, messages, H) {
+  const out = { content: '', thinking: '', stats: null, stop: '', sig: '', redacted: '', calls: [], recovered: false, stopped: false };
+  try {
+    for await (const ev of cfg.stream(messages, cfg.opts || {}, cfg.signal)) {
+      if (ev.type === 'content') { out.content += ev.text; call(H.onDelta, { type: 'content', text: ev.text }); }
+      else if (ev.type === 'thinking') { out.thinking += ev.text; call(H.onDelta, { type: 'thinking', text: ev.text }); }
+      else if (ev.type === 'thinking_sig') { out.sig += ev.text; }
+      else if (ev.type === 'thinking_redacted') { out.redacted += ev.text; }
+      else if (ev.type === 'tool_calls') { out.calls.push(...ev.calls); if (ev.recovered) out.recovered = true; }
+      else if (ev.type === 'stats') { out.stats = ev.raw; }
+      else if (ev.type === 'stop') { out.stop = ev.reason || ''; }
+      else if (ev.type === 'error') { call(H.onNotice, { kind: 'error', text: ev.message }); throw new Error(ev.message); }
+    }
+  } catch (e) {
+    if (!isAbort(e, cfg.signal)) throw e;
+    out.stopped = true;
+  }
+  return out;
+}
+
 async function run(cfg) {
   const H = cfg.hooks || {};
-  const call = (fn, ...a) => { try { return fn && fn(...a); } catch (e) { console.warn('[agent] hook error', e); } };
 
   const maxRounds = Number.isFinite(cfg.maxRounds) ? cfg.maxRounds : 8;
   const seen = new Set();                    // 已成功执行过的工具指纹
@@ -148,21 +196,15 @@ async function run(cfg) {
       call(H.onTurnStart, { round: rounds });
 
       /* --- 调用模型（流式） --- */
-      let roundContent = '', roundThinking = '', roundStats = null, stop = '';
-      let roundSig = '', roundRedacted = '';   // Anthropic 扩展思考的签名 / 判红块（要原样回传）
-      const calls = [];
-      let recovered = false;          // 工具调用是从正文里认回来的（上游没按结构化字段下发）
-      for await (const ev of cfg.stream(sendMessages, cfg.opts || {}, cfg.signal)) {
-        if (ev.type === 'content') { roundContent += ev.text; content += ev.text; call(H.onDelta, { type: 'content', text: ev.text }); }
-        else if (ev.type === 'thinking') { roundThinking += ev.text; thinking += ev.text; call(H.onDelta, { type: 'thinking', text: ev.text }); }
-        else if (ev.type === 'thinking_sig') { roundSig += ev.text; }
-        else if (ev.type === 'thinking_redacted') { roundRedacted += ev.text; }
-        else if (ev.type === 'tool_calls') { calls.push(...ev.calls); if (ev.recovered) recovered = true; }
-        else if (ev.type === 'stats') { roundStats = ev.raw; }
-        else if (ev.type === 'stop') { stop = ev.reason || ''; }
-        else if (ev.type === 'error') { call(H.onNotice, { kind: 'error', text: ev.message }); throw new Error(ev.message); }
-      }
-      if (roundStats) stats = roundStats;
+      const round = await readRound(cfg, sendMessages, H);
+      /* **先记账再判中断**：中断时这一轮已经流出来的正文/思考照常交回（一个字都不丢） */
+      content += round.content;
+      thinking += round.thinking;
+      if (round.stopped) { stopped = true; break outer; }   // 读流期间被中止：按"停止"收尾
+      const roundContent = round.content, roundThinking = round.thinking, stop = round.stop;
+      const roundSig = round.sig, roundRedacted = round.redacted;   // Anthropic 思考签名 / 判红块（原样回传）
+      const calls = round.calls, recovered = round.recovered;       // 工具调用（可能是从正文里认回来的）
+      if (round.stats) stats = round.stats;
       if (stop) stopReason = stop;
 
       /* --- 空回答保护：这一轮没有正文、也没有工具调用 = 没回答 ---
@@ -280,8 +322,13 @@ async function run(cfg) {
           }
           const ms = t0 == null ? 0 : Math.round(((globalThis.performance || Date).now()) - t0);
           call(H.onToolEnd, { call: c, token: item.token, result, ms });
-          trace.push({ name: c.name, label: c.name, ok: result.ok, note: result.note || '',
-            args: shrinkArgs(c.args), ms, result: String(result.text || '').slice(0, 4000) });
+          trace.push({
+            name: c.name, label: c.name, ok: result.ok, note: result.note || '',
+            args: shrinkArgs(c.args), ms, result: String(result.text || '').slice(0, 4000),
+            /* 可下载文件清单（deliver_file）：内核自己的 trace 也带上，与实时追踪条同一形状——
+               两条 trace 都可能有下游消费者（收尾合并 / 落盘），少一处就会"卡片只在一边有"。 */
+            ...(result.files && result.files.length ? { files: result.files } : {}),
+          });
           context = context.concat([{ role: 'tool', toolCallId: c.id, name: c.name, content: result.text }]);
         };
 
