@@ -10,6 +10,12 @@
 - 仓库根 `PROJECT-STRUCTURE.md` —— 整个文档站（非 agent 部分）
 - 站点根 `lib/agent/AUDIT-2026-09-30-INDUSTRIAL.md` —— 服务端安全审计
 
+> **两种宿主**：本站是宿主之一（进程入口 `server.js`，还挂着文档/媒体/剧本编辑器）；另一份最小宿主
+> 在公开仓库 `github.com/youlikeorange/wenming-agent` 的 `standalone.js`（只做静态服务 + 登录三端点 +
+> `/agent/*`，`node standalone.js` 即可跑）。两者共用同一份 `lib/agent/**` 与 `agent/src/**`，
+> 数据格式一致、数据目录不同（本站 `~/.local/share/wenming-web`，standalone 默认 `~/.local/share/wenming-agent`）。
+> 两边的对应改动要`./tools/sync.sh` 同步（见仓库 README）。
+
 > 文档里的行号是 2026-10-01 的版本。改动后如果对不上，以**函数名**为准（用 `grep -n "函数名" 文件` 定位）。
 > 修改任何 `agent/src/**` 之后必须 `cd agent && npm run build`（页面只认
 > `public/llm-chat/vendor/agent.js`）；改 `lib/agent/**`（服务端）之后必须 `bash down.sh && bash up.sh`，
