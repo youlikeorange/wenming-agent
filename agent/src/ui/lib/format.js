@@ -86,7 +86,19 @@ export function outlineLabel(text, max = 60) {
   return chars.length > max ? chars.slice(0, max).join('') + '…' : plain;
 }
 
-/** 一轮的元信息：tok/s · tokens · prompt · 耗时（拿不到 usage 时按字数估算 tokens） */
+/** 运行时长（人话）：12.3 秒 / 1 分 23 秒 / 1 小时 2 分。
+ *  用来把"这一轮跑了多久"说清楚——旧写法只有 `(ms/1000).toFixed(1) + 's'`，
+ *  跑十分钟的一轮显示成 "612.4s"，用户得自己换算。 */
+export function fmtDuration(ms) {
+  const v = Number(ms) || 0;
+  if (v <= 0) return '';
+  if (v < 60000) return `${(v / 1000).toFixed(v < 10000 ? 1 : 0)} 秒`;
+  const secs = Math.round(v / 1000);
+  const m = Math.floor(secs / 60);
+  if (m < 60) return `${m} 分 ${secs % 60} 秒`;
+  return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
+}
+
 /** 一轮的元信息：tok/s · tokens · prompt · 耗时（拿不到 usage 时按字数估算 tokens） */
 export function statsParts(stats, wallMs, content) {
   const out = [];

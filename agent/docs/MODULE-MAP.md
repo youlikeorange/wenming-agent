@@ -120,6 +120,7 @@
 | GET | `/agent/run/events` | 单运行 SSE（先回放再续播；诊断用） | `?id=` | SSE 事件流 | `run-events.js:122-146` |
 | GET | `/agent/run/state` | 某会话在跑吗 + 本账号在跑清单 | `?sessionId=` | `{run\|null,runs[],busy[]}` | `run-registry.js:74-78` |
 | GET | `/agent/run/subagent` | 子智能体完整转录（结束保留 10 分钟） | `?id=<runId>&sub=<subId>` | `{sub{steps[],answer,…}}` | `run.js:148-162` |
+| POST | `/agent/run/undo` | **一键撤销**：把这一轮的文件改动恢复原状（日志在账号目录里，见 `undo.js`） | `{id:runId,sessionId?}` | `{ok,marked,partial,result{restored[],removed[],failed[]},summary}`；没解锁/没绑定时 403 + `needUnlock/needBind` | `run-http.js` · `run.js` 的 `undoRun` · `undo.js` 的 `undo` |
 | POST | `/agent/run/stop` / `steer` / `confirm` | 停止 / 生成中插话 / 回答确认 | `{id,…}` | `{ok}` | `run-http.js:84-97` |
 | POST/GET | `/api/login` · `/api/logout` · `/api/session` | 文档站账号（宿主的，不在 agent 内实现） | — | — | `core/endpoints.js:63-65` |
 
@@ -144,6 +145,9 @@ STATE_DIR/
     │   ├── MEMORY.md                    # 记忆索引（Markdown 链接列表）
     │   └── memory/*.md                  # 每条记忆一个 Markdown（YAML frontmatter + 正文）
     ├── downloads/                       # 待下载目录（可执行后缀的文件落成 <名>.zip；判据只看后缀名）
+    ├── undo/<会话id>/<运行id>/          # 一次运行的**文件改动日志**（一键撤销的依据，见 lib/agent/undo.js）
+    │   ├── meta.json                    # {runId,sessionId,liveId,ts,undone,entries[],skipped[]}
+    │   └── blobs/bN                     # 被改/被删文件的**原内容**（撤销时写回；只留原样，不留改后）
     └── archive/
         ├── sessions.json                # 归档会话（原样 + archivedAt）
         ├── projects.json                # 归档项目元信息（+ archivedAt/memoryCount/sessions）
@@ -250,13 +254,17 @@ STATE_DIR/
 ```js
 Session = { id, title(≤80), ts, provider, project?, msgs:[Msg], memory?[]（会话记忆）, compaction?{upTo,count,text,ts} }
 Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming?, error?,
-        thinking?, thinkingSig?, redactedThinking?, stats?, wallMs?,
-        toolCalls[{id,name,args}]?, trace[{name,label,ok,note,args,ms,result,kind?,state?,files?}]?,
+        thinking?, thinkingSig?, redactedThinking?, stats?, wallMs?（本轮用时，卡片底部那句）,
+        toolCalls[{id,name,args}]?,
+        trace[{name,label,ok,note,args,ms,result,resultChars?,kind?,state?,files?,lines?}]?,
+        undo?{runId,ts,count,files[],more,added,removed,skipped,complete,undone,undoneAt?,lastFailed?},
         injected{summary,text}? }
 ```
 
 **必须落盘的字段**（删了会坏功能）：`error`（错误块/重试）、`thinkingSig`/`redactedThinking`（Anthropic 回传）、
-`trace[].files`（下载卡片）、`session.memory`、`session.compaction`。
+`trace[].files`（下载卡片）、`trace[].lines`（卡片上的 +N/−M 行）、`msg.wallMs`（运行时长）、
+`msg.undo`（「撤销本轮文件改动」按钮与"已撤销"状态；原内容备份在 `agent/<账号>/undo/` 里）、
+`session.memory`、`session.compaction`。
 
 **会话里没有 tool 消息（2026-10-02 实测确认的契约）**：落盘的会话只有 `user` 与 `assistant`（正文 + `trace`）。
 工具调用/结果只活在**一条运行的内存上下文**里——同轮内模型一定看得到工具输出（且与 `tool_calls` 的 id 配对），
@@ -323,6 +331,7 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 | 加一个**设置项** | 设置分区组件 + `ui/state/settings.js` 动作 | `core/params.js`（如果是生成参数） | 若是 provider 字段：`settingsForSave()`（`host.js:133`）**白名单** + `sanitize.js` | 前端白名单漏了 = "界面改了存不下来"（踩过：`sessionHeader`） |
 | 调**内设上限**（追踪条字数、压缩输入、写入/目录树条数……） | — | `core/params.js` 的 `TOOL_FIELDS` 加一条（组 `record` / `subagent` / `fs`） | 服务端硬上限在 `lib/agent/limits.js` 的 `LIMITS`（环境变量可抬） | **默认值只在 schema 写一次**；每处消费都必须 `val2('<key>')`（`params.test.mjs` 会扫源码核键名）；追踪条上限的五个消费点见 §10 |
 | 改**会话/消息结构** | `ui/state/session.js`、`Message.jsx` | `core/sessions.js`、`core/assemble.js` | `store.js` 的 `sanitizeSession/sanitizeMsg`（白名单） | 新字段要在 sanitize 里放行，否则落盘即丢 |
+| 改**改动行数 / 一键撤销** | `TraceStrip.jsx` 的 `DiffChip`、`Message.jsx` 的 `RunFooter`/`confirmUndo`、`ui/state/run.js` 的 `fillToolEnd`/`undoRun` | `core/agent.js` 的 `asResult`/`asLines`（trace 也带 `lines`）、`core/tool-runner.js`（**别漏这一层**：它转发 `lines`/`files`） | `undo.js`（日志/快照/恢复）、`tools/index.js` 的 `callTool`（唯一执行入口，包 `undo.wrap`）、`run-bridge.js`（带 `run` 上下文）、`run-loop.js` 收尾（`live.undo`）、`run-http.js` 的 `/undo`、`store.js` 白名单 | 行数/撤销摘要的字段链路有**六跳**，任何一跳漏了就是"真机看不到"（`lines` 曾在 `tool-runner.js` 被吞掉，单测抓到的）；撤销走与工具同一套闸门，没解锁时一个文件都不动且**不标已撤销** |
 | 改**技能编辑 UI** | `PromptsSection.jsx`（② 组） | — | — | 只有这一处编辑器；写入口用 `updateSkill`（技能）或 `set`（覆盖） |
 | 改**提示词保存链路** | `ui/state/host.js`（Prompts.onChange） | `core/prompts.js`（notify/serialize） | `index.js` store 路由 + `store.putPrompts` + `sanitize.prompts` | 托管运行那条订阅（`run-loop.js:83`）要跟着改，且**必须退订** |
 | 改**用量/压缩** | `ContextMeter.jsx`、`ui/state/settings.js` 的 `compactNow/uncompact` | `core/context.js` | — | 压缩提示词在登记表 `compact.*` |
@@ -377,6 +386,16 @@ npm run check     # 上述一起跑
 12. **界面输入框必须用 `ImeInput/ImeTextarea`**：受控输入框的值回写会取消 Chromium 输入法组合态
     （拼音+汉字叠加、一键出多字母）。新增任何文本框都别直接用 `<input>`。
 13. **`agent/src` 改了不 build = 页面行为不符合源码**（页面只引用 `vendor/agent.js`）。
+14. **工具结果的字段要过六跳才到界面**：工具返回 → `tools/index.js` 响应 → `core/tool-runner.js`
+    的 `callAgentTool`（**它只转发它认识的键**：`files`/`lines` 都在这层显式列着）→ `core/agent.js`
+    的 `asResult` 白名单 → 事件/落盘（`run-loop.js` 的 `loopHooks`、`sanitizeMsg`）→ 组件。
+    2026-10-03 实测：`lines` 加进前五跳、漏了 `tool-runner.js`，服务端日志明明记了、卡片上就是没有。
+15. **撤销（`/agent/run/undo`）走与工具同一套闸门**（roots + 绑定账号权限 + 解锁）：没解锁时
+    **一个文件都不动**，且日志**不标"已撤销"**（全部失败 = 没撤过，解锁后能重试；部分失败时按钮留着）。
+    别为了"让撤销好用"给它开特权通道。`runId` 是唯一的取数键（`readJournal`），会话被**彻底删除**
+    时清日志（归档保留）。
+16. **`undo.wrap` 只覆盖五个文件工具**（write/edit/create_directory/move/delete）：`run_command`
+    改了什么进程外无从知晓——界面文案里如实写着，不做"看起来能撤销"的假象。
 
 ---
 
@@ -428,7 +447,10 @@ npm run check     # 上述一起跑
 
 刻意**不**开放的（数据保留类，改了等于给自己制造数据丢失/内存风险）：会话 ≤300、消息 ≤2000/会话、
 会话 ≤32MB、trace ≤100 条/消息、记忆 ≤300 条（`lib/agent/store.js`）、归档 ≤500/100（`archive.js`）、
-待下载 500 项 / 512MB / 2GB（`files.js`）。要动它们请改代码并同步改这一节。
+待下载 500 项 / 512MB / 2GB（`files.js`）、**撤销日志**（`undo.js`：单文件 8MB、目录 32MB/500 项、
+单轮 200 条/128MB、每账号 200 份/512MB/30 天，`AGENT_UNDO_FILE_BYTES` / `AGENT_UNDO_TREE_BYTES` /
+`AGENT_UNDO_MAX_ENTRIES` / `AGENT_UNDO_RUN_BYTES` / `AGENT_UNDO_MAX_JOURNALS` /
+`AGENT_UNDO_ACCOUNT_BYTES` / `AGENT_UNDO_KEEP_DAYS` 可调）。要动它们请改代码并同步改这一节。
 
 **注意**：`plugin_exec_out_kb`（输出上限）不只管命令输出——`tools/index.js` 用它截**所有工具结果**，
 读大文件时文件内容先被它截一次（默认 16KB），再被 `record_trace_chars` 截一次（默认 4000 字）。

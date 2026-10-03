@@ -53,6 +53,7 @@ export const EP = {
   runStop: `${BASE}/run/stop`,             // POST { id }
   runSteer: `${BASE}/run/steer`,           // POST { id, text }（生成中插话）
   runConfirm: `${BASE}/run/confirm`,       // POST { id, confirmId, ok, remember }
+  runUndo: `${BASE}/run/undo`,             // POST { id: runId, sessionId? } → 把这一轮的文件改动恢复原状
   runHub: `${BASE}/run/hub`,               // GET  → SSE：**本账号全部运行**的事件（统一口，前端只连这一条）
   /* 待下载目录（传输文件插件）：每个账号一个目录，界面菜单与会话卡片都从这里取 */
   files: `${BASE}/files`,                  // GET  → { dir, entries:[{name,size,mtime,exec,packaged,downloadName}] }

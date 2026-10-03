@@ -1,16 +1,17 @@
 // Message.jsx —— 单条消息：助手 ghost 气泡（无框、整行排版）/ 用户右侧气泡（按内容收缩，≤80% 宽）
 // （思考折叠、追踪条 Marker、Markdown 正文、元信息、悬停操作；视觉规范见 styles.css 的 .marker/.shimmer）
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, ChevronRight, Copy, RefreshCw, Trash2 } from 'lucide-react';
+import { Bot, ChevronRight, Copy, RefreshCw, Trash2, Undo2 } from 'lucide-react';
 import { deleteRound, regenerateLast } from '../state/session.js';
-import { askConfirm } from '../state/host.js';
+import { undoRun } from '../state/run.js';
+import { askConfirm, hooks } from '../state/host.js';
 import { Button } from '../components/ui/button.jsx';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
 import { toast } from '../components/ui/toast.jsx';
 import { cn } from '../lib/utils.js';
 import TraceStrip from './TraceStrip.jsx';
 import { renderMarkdownHtml } from './chat-utils.js';
-import { statsParts } from '../lib/format.js';
+import { fmtDuration, shortPath, statsParts } from '../lib/format.js';
 
 const ACT_CLS = 'h-6 gap-1 px-1.5 text-[11px] text-subtle hover:text-foreground';
 
@@ -66,7 +67,9 @@ function Thinking({ text, streaming }) {
  *  错误挂在这条消息上（msg.error），这里画成一个带边框的错误块并把「重试这一轮」放在手边——
  *  旧实现只有一行红字，用户最容易的反应是"它卡住了"而不是"它失败了"。 */
 function Meta({ msg, stale, canRetry, busy }) {
-  const parts = statsParts(msg.stats, msg.wallMs, msg.content);
+  /* 耗时**不在这里**显示：`RunFooter` 用一句人话写「本轮用时 1 分 23 秒」，
+     这里只留 tok/s 与 tokens（两处都写一遍时间，用户会以为是两个不同的数）。 */
+  const parts = statsParts(msg.stats, null, msg.content);
   const empty = !msg.streaming && !stale && !msg.content && !msg.thinking
     && !(msg.trace || []).length && !msg.error;
   return (
@@ -93,11 +96,147 @@ function Meta({ msg, stale, canRetry, busy }) {
       ) : null}
       {empty ? <p className="text-[11px] text-subtle">这一轮没有返回内容（模型空回答）。</p> : null}
       {parts.length ? (
-        <p className="text-[11px] tabular-nums text-subtle" title="tok/s · tokens · 耗时（服务端返回 usage 时才有）">
+        <p className="text-[11px] tabular-nums text-subtle" title="tok/s · tokens（服务端返回 usage 时才有）">
           {parts.join(' · ')}
         </p>
       ) : null}
     </>
+  );
+}
+
+/** 撤销确认框与结果里的文件清单（最多列 8 个，其余写"等 N 个"） */
+const filesText = (undo) => {
+  const list = (undo.files || []).slice(0, 8).map((f) => shortPath(f));
+  const rest = (undo.files || []).length + (undo.more || 0) - list.length;
+  return list.join('\n') + (rest > 0 ? `\n…等共 ${undo.count} 个文件` : '');
+};
+
+/** 撤销确认框的正文：说清会发生什么、列出文件、记录不全时如实提醒 */
+function undoBody(undo) {
+  const warn = undo.skipped || undo.complete === false
+    ? `\n\n注意：这一轮有 ${undo.skipped || '部分'} 处改动没能记录（文件过大或超过上限），撤销只能恢复其余部分。`
+    : '';
+  return '新建的文件会被删掉，改过的写回运行前的内容，删掉的补回来。'
+    + '运行之后你再手动改过的内容也会被覆盖，这一步不可再撤销。\n\n'
+    + filesText(undo) + warn;
+}
+
+/** 撤销结果 → 一句 toast；返回 true = 全部恢复（按钮可以收起来） */
+function reportUndo(d) {
+  const res = d.result || {};
+  const ok = (res.restored || []).length + (res.removed || []).length;
+  const failed = res.failed || [];
+  if (failed.length) {
+    toast(`已恢复 ${ok} 处；还有 ${failed.length} 处没恢复：${(failed[0] || {}).error || ''}`
+      + '（可以再点一次「撤销本轮文件改动」重试）', 'err');
+    return false;
+  }
+  toast(`已撤销 ${ok} 处文件改动，都恢复成运行前的样子了`, 'ok');
+  return true;
+}
+
+/** 点「撤销」：确认 → 请求服务端 → 一句结果；返回组件该切到的状态。
+ *  没解锁 / 没绑定时按工具那条路的老规矩把用户引到该去的地方（解锁框 / 绑定抽屉），
+ *  而不是只给一句报错——撤销要过与工具**同一套闸门**，这是设计（见 lib/agent/tools/fs.js）。 */
+async function confirmUndo(undo) {
+  const r = await askConfirm({
+    title: `把这一轮的 ${undo.count} 处文件改动恢复原状？`,
+    body: undoBody(undo), okText: '撤销这些改动', danger: true,
+  });
+  if (!r.ok) return 'idle';
+  try {
+    const d = await undoRun(undo.runId);
+    return reportUndo(d) ? 'done' : 'idle';      // 部分失败：按钮留着，用户能重试
+  } catch (e) {
+    undoGateHelp(e);
+    return 'idle';
+  }
+}
+
+/** 撤销被闸门拦下（没解锁 / 没绑定）：把用户引到该去的地方。
+ *  与工具那条路同一口径——撤销要过与工具**同一套闸门**，这是设计（见 lib/agent/tools/fs.js）。 */
+function undoGateHelp(e) {
+  const p = (e && e.payload) || {};
+  if (p.needUnlock) {
+    toast(`撤销要写入文件：先解锁绑定账号 ${p.osUser || ''}（输入一次密码，只存在内存里）`, 'info');
+    hooks.onNeedUnlock(p.osUser || '');
+  } else if (p.needBind) {
+    toast('撤销要写入文件：先在设置里绑定本机账号', 'info');
+    hooks.onNeedBind();
+  } else toast('撤销失败：' + (e.message || e), 'err');
+}
+
+/** 运行时长（一句话，tabular-nums 让数字对齐） */
+function WallTime({ ms }) {
+  return (
+    <span className="tabular-nums" title="这一轮从开始到结束的总时长（服务端计，落盘在消息上）">
+      本轮用时 <span className="text-muted-foreground">{fmtDuration(ms)}</span>
+    </span>
+  );
+}
+
+/**
+ * 本轮收尾条：**运行时长** + 「撤销本轮文件改动」。
+ *
+ *  两样都由服务端给，界面不存任何东西：
+ *   · 时长 = `msg.wallMs`（服务端从这一轮开始到结束算的，落盘在消息上）；
+ *   · 撤销 = `msg.undo`（服务端按账号/会话/运行记的改动日志摘要；原内容备份在账号目录里，
+ *     见 lib/agent/undo.js）。所以刷新、关掉浏览器、换窗口回来，这一行还在。
+ *
+ *  撤销是**恢复原状**：新建的删掉、改过的写回运行前的内容、删掉的补回来、移动的回滚；
+ *  只覆盖文件工具（write_file/edit_file/create_directory/move_file/delete_path）——
+ *  run_command 对文件做了什么，进程外无从知晓，文案里如实写着。
+ */
+function RunFooter({ msg }) {
+  const [phase, setPhase] = useState('idle');            // idle | working | done
+  const view = footerView(msg, phase);
+  if (!view) return null;
+  const click = async () => { setPhase('working'); setPhase(await confirmUndo(view.undo)); };
+  return <FooterBody view={view} phase={phase} onClick={click} />;
+}
+
+/** 这一条消息该不该有收尾条、里面各块显示不显示（判据集中在这里，组件只管画） */
+function footerView(msg, phase) {
+  const undo = msg.undo;
+  const wall = Number(msg.wallMs) || 0;
+  if (msg.streaming || (!wall && !undo)) return null;
+  return { wall, undo, undone: !!(undo && undo.undone) || phase === 'done' };
+}
+
+function FooterBody({ view, phase, onClick }) {
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-subtle">
+      {view.wall ? <WallTime ms={view.wall} /> : null}
+      {view.undo && !view.undone ? <UndoButton undo={view.undo} phase={phase} onClick={onClick} /> : null}
+      {view.undo && view.undone ? <UndoneNote undo={view.undo} /> : null}
+    </div>
+  );
+}
+
+/** 撤销按钮：**常显**（不是悬停才出现）——用户要的是"点一下就撤"，多一步都嫌多 */
+function UndoButton({ undo, phase, onClick }) {
+  const retry = undo.lastFailed ? `。上次有 ${undo.lastFailed} 处没恢复（解锁绑定账号后可以重试）` : '';
+  return (
+    <Button
+      variant="outline" size="sm"
+      className="h-6 gap-1 px-2 text-[11px]"
+      disabled={phase === 'working'}
+      title={`把这一轮改过的 ${undo.count} 个文件恢复原状（原内容备份在服务器上，关掉浏览器也在）${retry}`}
+      onClick={onClick}
+    >
+      <Undo2 className="size-3.5" />
+      {phase === 'working' ? '正在撤销…' : `撤销本轮文件改动（${undo.count} 处）`}
+    </Button>
+  );
+}
+
+/** 撤销过之后的痕迹：留在原位（刷新后也知道"这一轮已经撤过了"） */
+function UndoneNote({ undo }) {
+  const lines = undo.added || undo.removed ? `（原本 +${undo.added} / −${undo.removed} 行）` : '';
+  return (
+    <span className="tabular-nums" title={`已恢复成这一轮开始前的样子：\n${filesText(undo)}`}>
+      ↩ 已撤销 {undo.count} 处文件改动{lines}
+    </span>
   );
 }
 
@@ -234,6 +373,7 @@ function Message({ msg, index, stale, isLastRound, busy }) {
           </p>
         ) : null}
         <Meta msg={msg} stale={stale} canRetry={isLastRound} busy={busy} />
+        <RunFooter msg={msg} />
         <Actions>{actions}</Actions>
       </div>
     </div>

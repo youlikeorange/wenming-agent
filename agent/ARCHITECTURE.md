@@ -137,6 +137,8 @@ settle(ev)
 ```
 finish(run, out, err)
   ├─ 合并内核结果进 live（停止时追加 *[已停止生成]*；失败时保留已生成内容）
+  ├─ live.wallMs = 本轮用时（卡片底部「本轮用时 X 分 X 秒」显示的就是它）
+  ├─ live.undo = undo.finishRun(run)  ← 文件改动日志落盘（有改动才有；见 lib/agent/undo.js）
   ├─ 剩下的插话 → emit steer_leftover（界面回填输入框）
   ├─ await persist(run, true)     ← **写完再广播 end**（否则客户端重拉会拿到半截快照）
   ├─ emit {type:'end'}            ← 浏览器 settle 的触发点

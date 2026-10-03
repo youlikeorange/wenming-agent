@@ -45,7 +45,28 @@ function metaText(t, running, failed) {
 /** 标题前缀（插话与子智能体各有一个小标记，类型一目了然） */
 const prefixOf = (t) => (isSteer(t) ? '💬 ' : isSub(t) ? '👥 ' : '');
 
-/** 一行 Marker：状态图标 + 标题（进行中走 shimmer）+ 备注/耗时/字数（tabular-nums） */
+/** 行数取值（负数/NaN 一律当 0） */
+const lineCount = (v) => Math.max(0, Math.floor(Number(v) || 0));
+
+/** 写入 / 删除的行数（写文件、改文件、删文件、移动/建目录才有）：
+ *  服务端在工具执行前后各拍一次快照比出来的（见 lib/agent/undo.js），随结果一路传到这条卡片上。
+ *  绿色 +N = 写入的行、红色 −M = 删除的行；两个都是 0 就不画。 */
+function DiffChip({ lines }) {
+  const added = lineCount(lines && lines.added);
+  const removed = lineCount(lines && lines.removed);
+  if (!added && !removed) return null;
+  const num = (v, cls, sign) => (v ? <span className={cls}>{sign}{fmtCount(v)}</span> : null);
+  return (
+    <span className="shrink-0 text-[11px] tabular-nums" title={`这次改动：写入 ${fmtCount(added)} 行、删除 ${fmtCount(removed)} 行`}>
+      {num(added, 'text-success', '+')}
+      {added && removed ? <span className="text-subtle">/</span> : null}
+      {num(removed, 'text-destructive', '−')}
+      <span className="text-subtle">行</span>
+    </span>
+  );
+}
+
+/** 一行 Marker：状态图标 + 标题（进行中走 shimmer）+ 改动行数 + 备注/耗时/字数（tabular-nums） */
 function Head({ t }) {
   const running = isRunning(t);
   const failed = t.ok === false && !running;
@@ -58,6 +79,7 @@ function Head({ t }) {
       <span className={cn('min-w-0 flex-1 truncate text-left', running && 'shimmer', isSteer(t) && 'text-foreground')}>
         {prefixOf(t)}{labelOf(t)}
       </span>
+      {running ? null : <DiffChip lines={t.lines} />}
       {meta ? (
         <span title={charsOf(t).truncated ? `只显示前 ${fmtCount(charsOf(t).shown)} 字，模型实际收到 ${fmtCount(charsOf(t).total)} 字` : undefined}
           className={cn('shrink-0 text-[11px] tabular-nums', failed ? 'text-destructive' : 'text-subtle')}>{meta}</span>

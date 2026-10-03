@@ -205,6 +205,9 @@ export function createToolRunner() {
       ok: d.ok !== false, note: d.note || '完成', text: String(d.text || '(无输出)'),
       /* 可下载文件清单：原样往上传（内核 asResult 会保留它，追踪条据此画文件卡片） */
       files: Array.isArray(d.files) ? d.files : undefined,
+      /* 写入/删除的行数（写/改/删文件时服务端给的）：同样原样上传，
+         追踪条（信息卡片）据此显示 +N / −M（内核 asResult 的白名单里也有它） */
+      lines: d.lines && (d.lines.added || d.lines.removed) ? d.lines : undefined,
     };
   }
 

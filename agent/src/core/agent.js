@@ -32,11 +32,21 @@ const asFiles = (list) => (Array.isArray(list) ? list.slice(0, 20).map((f) => {
   for (const k of FILE_KEYS) if (f && f[k] !== undefined) out[k] = f[k];
   return out;
 }).filter((f) => f.name) : null);
+/** 行数统计（写/改/删 文件后服务端给的那两个数）：追踪条（信息卡片）显示 +N / −M。
+ *  白名单式保留，与 files 同一套写法——内核不认识它的语义，只负责一路传到追踪条。 */
+const asLines = (v) => {
+  if (!v || typeof v !== 'object') return null;
+  const added = Math.max(0, Math.floor(Number(v.added) || 0));
+  const removed = Math.max(0, Math.floor(Number(v.removed) || 0));
+  return (added || removed) ? { added, removed } : null;
+};
 const asResult = (r) => {
   if (r && typeof r === 'object') {
     const out = { ok: r.ok !== false, text: String(r.text ?? ''), note: r.note || '' };
     const files = asFiles(r.files);
     if (files && files.length) out.files = files;
+    const lines = asLines(r.lines);
+    if (lines) out.lines = lines;
     return out;
   }
   return { ok: true, text: String(r ?? ''), note: '' };
@@ -346,6 +356,8 @@ async function run(cfg) {
             /* 可下载文件清单（deliver_file）：内核自己的 trace 也带上，与实时追踪条同一形状——
                两条 trace 都可能有下游消费者（收尾合并 / 落盘），少一处就会"卡片只在一边有"。 */
             ...(result.files && result.files.length ? { files: result.files } : {}),
+            /* 写入/删除的行数（服务端 undo.wrap 记的）：同上，两条 trace 必须同形 */
+            ...(result.lines ? { lines: result.lines } : {}),
           });
           context = context.concat([{ role: 'tool', toolCallId: c.id, name: c.name, content: result.text }]);
         };

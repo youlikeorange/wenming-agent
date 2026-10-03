@@ -158,6 +158,24 @@ function slotFor(arr, ev, create) {
 }
 
 /* ============================ 事件 → 界面状态 ============================ */
+
+/** 工具结束事件 → 追踪条条目（与落盘那份同形；服务端没给的字段就不写）。
+ *  单独一个函数：tool_end 里塞着六七条"缺省保持"的字段，全挤在分派表里会把那条分支撑成
+ *  "改一处要读二十行"的样子（这几个字段各自都有过踩坑记录，见下面的注释）。 */
+function fillToolEnd(at, ev) {
+  Object.assign(at, {
+    kind: at.kind === 'sub' ? 'sub' : 'tool', state: 'done', label: ev.label || at.label, name: ev.name || at.name,
+    ok: ev.ok !== false, note: ev.note || '', args: ev.args, result: ev.result, ms: ev.ms, callId: ev.callId || at.callId,
+    /* 真实字数（记录上限截断前的长度）：追踪条显示"模型收到多少 / 只显示前 N 字" */
+    resultChars: ev.resultChars,
+    /* 写入/删除的行数（写/改/删文件才有；服务端只在两个数非零时才给）：追踪条显示 +N / −M */
+    ...(ev.lines ? { lines: ev.lines } : {}),
+    /* 可下载文件清单（deliver_file）：追踪条上的文件卡片（原先漏了这一步——
+       卡片要等重拉会话才出现，直播时看不到） */
+    ...(Array.isArray(ev.files) && ev.files.length ? { files: ev.files } : {}),
+  });
+}
+
 /* 形状与 core/agent.js 的 hooks 一致 + 托管运行专属的几条（sub_* 是子智能体）。
    按类型查表分派（不是一条长 if 链）：事件种类会随功能增加。 */
 const HANDLERS = {
@@ -195,12 +213,7 @@ const HANDLERS = {
   tool_end: (ev, msg) => {
     const arr = traceArr(msg);
     const at = slotFor(arr, ev, () => ({ kind: 'tool', label: ev.label, name: ev.name, ok: true, note: '', callId: ev.callId || '' }));
-    if (at) Object.assign(at, {
-      kind: at.kind === 'sub' ? 'sub' : 'tool', state: 'done', label: ev.label || at.label, name: ev.name || at.name,
-      ok: ev.ok !== false, note: ev.note || '', args: ev.args, result: ev.result, ms: ev.ms, callId: ev.callId || at.callId,
-      /* 真实字数（记录上限截断前的长度）：追踪条显示"模型收到多少 / 只显示前 N 字" */
-      resultChars: ev.resultChars,
-    });
+    if (at) fillToolEnd(at, ev);
     touchSoon();
   },
   /* ---- 子智能体：过程实时显示在那张"子智能体"卡片上（结论仍由 tool_end 交给模型） ---- */
@@ -341,6 +354,9 @@ function noteFailure(msg, error) {
 function finishMsg(msg, ev) {
   delete msg.streaming;
   if (Number.isFinite(ev.ms)) msg.wallMs = ev.ms;
+  /* 本轮的文件改动摘要（服务端落盘那份的同一个对象）：界面据此画「撤销本轮文件改动」——
+     关掉浏览器回来，它还在消息上（msg.undo 已随会话落盘）。没有改动时是 null，不挂。 */
+  if (ev.undo) msg.undo = ev.undo;
   if (ev.status === 'error' && ev.error) noteFailure(msg, ev.error);
   if (ev.status === 'stopped' && msg.content && !/\*\[已停止生成\]\*/.test(msg.content)) {
     msg.content += '\n\n*[已停止生成]*';
@@ -583,6 +599,26 @@ export async function stopRun(sessionId) {
   const rec = runs.get(sid);
   if (!rec || rec.settled) return;
   try { await post(EP.runStop, { id: rec.runId }); } catch { /* 已经结束了 */ }
+}
+
+/**
+ * 一键撤销：把某一次运行的文件改动全部恢复原状。
+ *
+ *  请求打到服务端（原内容备份与改动日志都在**账号目录**里，不在浏览器里）；
+ *  成功后服务端会把落盘那条消息标成"已撤销"（所有窗口/刷新后一致），
+ *  本地这份也同步标上——不标的话，本窗口下一次整体写回会话会把"已撤销"覆盖回去。
+ */
+export async function undoRun(runId) {
+  const d = await post(EP.runUndo, { id: String(runId || '') }, { timeoutMs: 120000 });
+  /* 服务端说"全部恢复了"才标已撤销（部分失败时它会留着按钮让人重试，本地不能自作主张） */
+  if (d && d.marked !== false) {
+    for (const sess of state.sessions) {
+      const msg = (sess.msgs || []).find((m) => m && m.undo && m.undo.runId === runId);
+      if (msg) { msg.undo.undone = true; msg.undo.undoneAt = d.undoneAt || Date.now(); }
+    }
+    touch();
+  }
+  return d;
 }
 
 /** 子智能体的完整转录（界面展开看"它到底做了什么"）；失败回 null。 */
