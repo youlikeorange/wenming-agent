@@ -13,6 +13,8 @@
 | --- | --- |
 | `server.js` | 宿主站点入口，把 `/agent/*` 挂到 `lib/agent/index.js`（还有登录态、配额等宿主能力）；独立运行时的对应物是 `standalone.js` |
 | `lib/config.js` | 站点根目录 / 状态目录 / 端口等配置（`STATE_DIR` 在这里定） |
+| `lib/paths.js` | 状态目录的路径拼接与账号名校验（`STATE_DIR` 下每个账号一个目录；账号名不合法即拒绝拼路径）—— `lib/state.js` 与 `lib/agent/store.js`、`lib/agent/files.js` 都走它 |
+| `lib/ids.js` | 标识符规则（账号名 / 会话 id / 项目 id 的正则与校验），路径与存储层共用的唯一真源 |
 | `lib/http.js` | HTTP 基座（请求体读取、单窗口互斥用的客户端标识头） |
 | `lib/auth.js` | 账号登录与权限（scrypt 口令、Cookie 会话、登录限流、审计日志） |
 | `lib/state.js` | `STATE_DIR` 下的原子写与小文件存储（`permissions.json` / 会话 / 配额） |

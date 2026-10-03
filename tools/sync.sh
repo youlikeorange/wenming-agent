@@ -118,6 +118,19 @@ for n in "${NEVER[@]}"; do
   [ -e "$REPO_ROOT/$n" ] && rm -f "$REPO_ROOT/$n" && echo "  ✔ 已移出仓库（不外传）：$n"
 done
 
+# ── 发布前守卫：入口依赖闭包必须完整 ────────────────────────
+# 2026-10-03 的真实事故：站点新增 lib/paths.js、lib/ids.js，同步清单没跟着加，
+# 仓库那一版 `node standalone.js` 直接起不来（Cannot find module './paths'）。
+# 静态检查抓不到，这里跑一遍再提交；缺文件就**不提交**，先把 paths.conf 补上。
+if command -v node >/dev/null 2>&1; then
+  if ! node "$REPO_ROOT/tools/deps-check.mjs"; then
+    echo "❌ 依赖闭包不完整：这次同步**没有提交**。把上面缺的文件补进 tools/paths.conf 后重跑。" >&2
+    exit 1
+  fi
+else
+  echo "  ⚠️ 没找到 node，跳过依赖闭包检查（tools/deps-check.mjs）"
+fi
+
 # ── 提交 ───────────────────────────────────────────────────
 cd "$REPO_ROOT"
 if [ -z "$(git status --porcelain)" ]; then

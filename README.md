@@ -141,9 +141,10 @@ public/llm-chat/     页面壳 index.html + 构建产物 vendor/（★ vendor �
 server.js            宿主站点入口（留档）：/agent/* 怎么挂上来的
 lib/*.js             宿主依赖留档（standalone.js 也直接用它们，见 HOST-DEPS.md）
 tools/users.js       ★ 账号管理（独立运行用）：list / add / passwd
-tools/sync.sh        站点 → 仓库：同步 + 提交 + 推送
+tools/sync.sh        站点 → 仓库：同步 + 提交 + 推送（提交前跑依赖闭包检查）
 tools/restore.sh     仓库 → 站点：回滚（自动备份 + 重建 + 提示重启）
-tools/paths.conf     上面两个脚本共用的路径清单
+tools/deps-check.mjs 入口依赖闭包检查：仓库里缺文件就拦住发布（2026-10-03 事故的守卫）
+tools/paths.conf     上面几个脚本共用的路径清单
 ```
 
 > `public/llm-chat/vendor/`（界面构建产物，约 850KB）**随仓库分发**：没有它，下载者必须先
@@ -280,8 +281,9 @@ git tag -a v2.0.1 -m "稳定版：xxx" && git push origin main --follow-tags
 
 ## 宿主依赖
 
-`lib/agent/` 依赖站点公共件：`lib/auth.js`（登录）、`lib/config.js`、`lib/http.js`、`lib/lock.js`、
-`lib/security.js`（路径安全与安全响应头）、`lib/state.js`、`lib/upstream-http.js`、`lib/userdata.js`、
+`lib/agent/` 依赖站点公共件：`lib/auth.js`（登录）、`lib/config.js`、`lib/http.js`、`lib/ids.js`
+（标识符规则）、`lib/lock.js`、`lib/paths.js`（状态目录与账号名校验）、`lib/security.js`
+（路径安全与安全响应头）、`lib/state.js`、`lib/upstream-http.js`、`lib/userdata.js`、
 `lib/zip.js`（可执行文件打包），以及 `server.js` 里对 `/agent/*` 的挂载。它们按真实相对路径同步在
 仓库里——**`standalone.js` 与仓库里的服务端测试都直接 require 它们**；`restore.sh` 默认**不写回**
 站点，因为它们是站点公共件，其他子项目也在用。清单与原因见 [`HOST-DEPS.md`](HOST-DEPS.md)。

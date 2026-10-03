@@ -158,6 +158,16 @@ else
   echo "     cd $SITE_ROOT/agent && npm install && npm run build"
 fi
 
+# ── 回滚后守卫：入口依赖闭包必须完整 ────────────────────────
+# 回滚是把仓库那一版写回站点：如果那个 tag 本身缺文件（见 sync.sh 里的同款检查与
+# 2026-10-03 的事故记录），这里必须立刻说出来，而不是等站点起不来。
+if command -v node >/dev/null 2>&1; then
+  if ! node "$REPO_ROOT/tools/deps-check.mjs"; then
+    echo "⚠️  目标版本（$COMMIT $TAG）的入口依赖闭包不完整——这一版本身就跑不起来，" >&2
+    echo "    站点现在多半也起不来。换一个较新的版本回滚，或按上面的清单补齐文件。" >&2
+  fi
+fi
+
 echo
 echo "✅ 恢复完成（版本 $COMMIT $TAG）。"
 echo "   服务端（lib/agent/*）的改动**必须重启站点才生效**："
