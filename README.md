@@ -6,8 +6,13 @@
 
 零框架内核 · React 界面 · 标准 OpenAI / Anthropic 协议 · 服务端托管运行 · **下载即可运行**
 
+**提示词全部可见可改 · 没有 MCP · 纯 CLI 执行 · SKILL.md 技能模式** —— 详见 [为什么是它](#为什么是它和其它-agent-有什么不一样)
+
 ![Node](https://img.shields.io/badge/Node-%E2%89%A5%2020-339933?logo=nodedotjs&logoColor=white)
-![tests](https://img.shields.io/badge/tests-198%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-217%20passing-brightgreen)
+![prompts](https://img.shields.io/badge/prompts-100%25%20%E5%8F%AF%E8%A7%81%E5%8F%AF%E6%94%B9-8957e5)
+![MCP](https://img.shields.io/badge/MCP-%E4%B8%8D%E9%9C%80%E8%A6%81-6e7781)
+![skills](https://img.shields.io/badge/skills-SKILL.md%20%E6%8C%89%E9%9C%80%E5%8A%A0%E8%BD%BD-0969da)
 ![build](https://img.shields.io/badge/build-esbuild%20%C2%B7%20Tailwind%20v4-4b32c3)
 ![protocol](https://img.shields.io/badge/protocol-OpenAI%20%7C%20Anthropic-1f6feb)
 ![runtime](https://img.shields.io/badge/core-zero--framework-orange)
@@ -26,13 +31,65 @@
 `/agent/*` 能力。模型走**标准 OpenAI / Anthropic 协议**（自建网关、官方 API、中转站都能接），
 密钥只存在服务端，不下发前端。
 
+- **设计取舍**：提示词全部可见可改（发给模型的每一句都在一张表里）、没有 MCP（工具内置、无中转进程）、
+  纯 CLI 执行（真 shell 进程 + 本机 CLI 工具）、SKILL.md 技能模式（技能是数据，按需加载）——见下一节。
 - **双层运行**：可以在浏览器里跑本地循环，也可以交给服务端跑——**托管运行时关掉标签页、断网、换窗口都不中断**，回来接着看。
-- **工具与权限**：文件读写、命令执行、联网搜索；访问级别 + 危险命令闸门（「总是允许」清单）+ 可访问目录白名单。
+- **工具与权限**：文件读写、命令执行、联网搜索、记忆、技能、子智能体；访问级别 + 危险命令闸门
+  （「总是允许」清单 + 危险命令自保清单）+ 可访问目录白名单。
 - **记忆三层**：全局记忆 / 项目记忆（服务端 Markdown 文件夹）/ 会话记忆，另有自动压缩与用量统计。
-- **技能**：吃主流 `SKILL.md` 结构，可预览（dryRun）后再安装。
-- **工程态度**：内核零框架、可在 Node 下直接单测；状态容器快照语义；198 个用例 + lint / 重复代码 / 模块环三道静态检查，全部离线可跑。
+- **技能**：吃主流 `SKILL.md` 结构，可预览（dryRun）后再安装，可按需加载不占上下文。
+- **工程态度**：内核零框架、可在 Node 下直接单测；状态容器快照语义；217 个用例 + lint / 重复代码 / 模块环三道静态检查，全部离线可跑。
 - **两种宿主**：可以挂进自带文档站的宿主（`server.js`，仓库里留档），也可以**单独跑**——
   仓库自带 `standalone.js` 这一份最小宿主（静态服务 + 登录 + `/agent/*`），clone 下来就能起来。
+
+## 为什么是它：和其它 Agent 有什么不一样
+
+主流 Agent 客户端（Claude Code、Cursor、Cline、各类 MCP 客户端）把能力放在黑盒或扩展包里：
+提示词写死在代码里看不到，工具靠 MCP 服务器外挂，扩展得打包安装。这个项目的取舍正相反，
+下面四条都能在界面上当场验证。
+
+### 一、提示词全部可见、可改
+
+凡是发给模型的文本都在一张**提示词登记表**里（源码 `agent/src/core/prompts.js`；界面 **设置 → 提示词**）：
+主系统提示词、Agent 行为准则、每个工具的使用说明与 schema 描述、记忆与技能的注入文本、
+上下文压缩指令、循环里注入的短句、输入框 `/` 触发的提示词模板——**逐条列出、逐条可改**，
+改坏了「恢复默认」一键回退。
+
+关键在「同源」：**模型的工具定义直接从这张表取值**（`agent-defs.js` 里 schema 的 description
+与参数说明就是登记表的条目）。界面上改一句描述，下一轮发给模型的就是改过的那句，不是两处各写一份。
+开关也在同一处——比如关掉内置的「联网搜索」技能，`web_search` 工具**直接不注册**：
+模型不知道有联网这回事，而不是"给了工具再祈祷它别用"。
+
+### 二、没有 MCP
+
+不写 `.mcp.json`、不起 MCP server、没有 JSON-RPC 中转层。文件、命令、联网搜索、记忆、技能、
+子智能体都是内核直连的**内置工具**，schema 与说明就是上面那张可编辑的表。少一个进程、
+少一层协议，权限判定还能看见真实的 ACL（文件工具以绑定系统账号的身份判定读写）。
+
+> 早期版本用 MCP 文件系统服务器做过落盘；2026-09 起被内置文件工具 + 记忆 + 技能取代——
+> 记忆与技能成为一等公民之后，MCP 能提供的东西就没有一样是非它不可的了。
+
+### 三、纯 CLI
+
+- **执行就是真命令行**：`run_command` 起的是真的 shell 进程，以你在**设置 → 本机账号**里绑定的
+  系统账号身份运行（同用户 `/bin/sh -c`，不同用户走 `su`，密码只走 stdin 管道）——
+  它能做什么完全由操作系统的权限决定，与你在终端里用那个账号敲一致。
+- **联网搜索**走本机 **AnySearch CLI**：默认匿名调用，零密钥开箱可用（要提额度再配 `ANYSEARCH_API_KEY`）。
+- **技能与记忆**是磁盘上的 Markdown / JSON（技能表 `prompts.json`、项目记忆是 `.md` 文件夹），
+  任何编辑器都能直接读改。
+- **跑起来与发布都是一条命令**：`node standalone.js`（服务端零 npm 依赖、不用 `npm install`）／
+  `./tools/sync.sh`（站点代码 → 仓库 → 推送）。
+
+### 四、技能模式（SKILL.md）
+
+技能吃主流 `SKILL.md` 结构（frontmatter + Markdown 正文），并且**是数据不是插件**：
+
+- **渐进披露**：每轮只把技能的名称与用途注入系统提示，正文等模型真要动手时用 `use_skill` 加载——
+  技能写多长都不占上下文，这也是能把长流程写进技能的原因。
+- **可写、可改、可导入**：模型自己能 `skill_write` 新建/改写、`skill_delete` 删除；
+  `skill_import` 从 `~/.agents/skills`、`~/.zcode/skills`、`~/.claude/skills` 这类目录装现成的技能，
+  怕装错可以先 `dryRun` 预览；人也可以在 设置 → 提示词 → ② 技能 里编辑同一份数据。
+- **改技能不用重启、不用重新构建**——它是运行时的数据，不是编译进去的代码。
 
 ## 架构
 
@@ -75,7 +132,7 @@ standalone.js         ★ 独立运行入口：不需要宿主站点，node stan
 agent/               界面构建工程（改这个子项目的唯一入口）
   src/core/            零框架内核（可在 Node 下单测）
   src/ui/              React 界面：state / features / components
-  test/                node --test 用例（当前 198 个）
+  test/                node --test 用例（当前 217 个）
   build.mjs            esbuild + Tailwind CLI 构建脚本
   README.md            工程说明 + 开发约定（改代码前先读）
   ARCHITECTURE.md      模块清单 · 调用流程 · 必须守住的不变量
@@ -140,7 +197,7 @@ node tools/users.js passwd admin                 # 改密码
 cd agent
 npm install          # 首次
 npm run build        # 产出 ../public/llm-chat/vendor/{agent.js,agent.css}
-npm test             # node --test：内核 / 协议 / 工具闸门 / 参数 / 状态编排（198 个）
+npm test             # node --test：内核 / 协议 / 工具闸门 / 参数 / 状态编排（217 个）
 npm run lint         # eslint（显式开 no-undef，warning 有只减不增的预算）
 npm run dup          # jscpd：重复代码块（有预算上限）
 npm run cycles       # madge：模块环（必须为 0）

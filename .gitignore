@@ -8,8 +8,10 @@ node_modules
 # sync.sh / drift.sh / restore.sh 三处都不再排除它，改源码后重新构建即随同步更新。
 
 # 内部审计记录：只留在本机站点里，不对外公开（sync/restore 都会跳过，见 tools/paths.conf）
+# AUDIT*.md 一起忽略，防止以后新增的审计文档漏进公开仓库
 agent/AUDIT.md
-agent/AUDIT-2026-09-30-INDUSTRIAL.md
+agent/AUDIT-*.md
+agent/BUGFIX-2026-10-02-SELF-AUDIT.md
 
 # 本机路径配置（每台机器自己的站点根目录）
 tools/site.conf
