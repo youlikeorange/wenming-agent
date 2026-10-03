@@ -276,7 +276,7 @@ export function createAgentDefs() {
       parameters: p({
         task: { type: 'string', description: '要子智能体完成的事：一两句话写清"做什么、要什么结果"，它看不到你这段对话' },
         label: { type: 'string', description: '给这个子任务起个短名（显示在追踪条上，便于你与用户分辨）' },
-        max_rounds: { type: 'number', description: '它最多跑几轮（可选，默认取面板里的「每个最多几轮」）' },
+        max_rounds: { type: 'number', description: '它最多跑几轮（可选，只能比面板里的「每个最多几轮」更少；不填就用面板值）' },
         allow_write: { type: 'boolean', description: '是否允许它改文件/执行命令/写记忆（默认 false=只读；面板允许时才有效）' },
         provider: { type: 'string', description: '用哪个服务商跑它（可选，如 "deepseek"；默认跟当前对话同一个模型）' },
       }, ['task']),

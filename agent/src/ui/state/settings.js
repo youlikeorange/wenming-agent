@@ -12,7 +12,7 @@ import { Prompts } from '../../core/prompts.js';
 import { Memory } from '../../core/memory.js';
 import { AgentContext } from '../../core/context.js';
 import { Binding } from '../../core/binding.js';
-import { asStringList, normalizeValue, TOOL_FIELDS } from '../../core/params.js';
+import { asStringList, normalizeValue, normalizeParam, TOOL_FIELDS } from '../../core/params.js';
 import { curSess, persistSession, saveSettings, hooks, val2 } from './host.js';
 import { applyAppearance, updateCtx, checkStatus } from './session.js';
 import { toast } from '../components/ui/toast.jsx';
@@ -128,15 +128,19 @@ export async function testProvider(cfg) {
 
 /* ============================ 参数 ============================ */
 
-/** scope: '' = 全局；否则是该模型 key（'<providerId>::<model>'） */
+/** scope: '' = 全局；否则是该模型 key（'<providerId>::<model>'）。
+ *  **归一化在这里做**（不只是控件层）：setParam 是参数写入的唯一 action，
+ *  预设重放、插话钩子、"以后不再问"这类直连调用也走它——口径收在一处，
+ *  越界/非法值不会因为"绕过了控件"就原样进 state 与磁盘。 */
 export function setParam(key, value, scope) {
+  const v = normalizeParam(key, value);
   const settings = copy(S());
   if (!scope) {
-    settings.params = Object.assign({}, settings.params, { [key]: value });
+    settings.params = Object.assign({}, settings.params, { [key]: v });
   } else {
     const cur = settings.paramsByModel[scope] || {};
     settings.paramsByModel = Object.assign({}, settings.paramsByModel, {
-      [scope]: Object.assign({}, cur, { [key]: value }),
+      [scope]: Object.assign({}, cur, { [key]: v }),
     });
   }
   patch({ settings });

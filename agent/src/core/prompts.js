@@ -67,14 +67,22 @@ const DEFAULTS = [
       + '⑤ 如果确实拿不到需要的信息，如实说明缺什么，不要编造。' },
 
   { id: 'system.skills_memory', group: 'system', kind: 'system', name: '技能与记忆存在哪',
-    desc: '告诉模型技能/记忆的存放位置、作用域（按文档站账号隔离）与增删改查入口，以及装现成技能时常见的目录。',
+    desc: '告诉模型技能/记忆的存放位置、作用域（按文档站账号隔离）、四类数据的边界（技能记"怎么做"、记忆记"事实"，同一件事只写一处）与增删改查入口，以及装现成技能时常见的目录。',
     text: '技能与记忆都存在**服务端**，并按**文档站账号隔离**——换个账号就看不到，也不跨用户共享（别向用户承诺"装一次所有人可用"）。\n'
-      + '· 技能：存在你这个账号的技能表里（服务端 STATE_DIR/agent/<账号>/prompts.json 的 skills[]），不是磁盘上的散文件；'
-      + '增删改查用 list_skills / use_skill / skill_write / skill_delete，装现成的 Markdown 用 skill_import。\n'
-      + '· 记忆分三类，都在服务端随账号走：**全局记忆**（跨会话、跟人走）、**项目记忆**'
+      + '【先分清四类：技能记"怎么做"，记忆记"事实"】\n'
+      + '· 技能（Skill）= 可复用的**做法**：步骤、流程、检查清单、触发词（"以后遇到 X 就这么做"）。'
+      + '它存在你这个账号的技能表里（服务端 STATE_DIR/agent/<账号>/prompts.json 的 skills[]），不是磁盘上的散文件；'
+      + '新建/改写用 skill_write，装现成的 Markdown 用 skill_import，看清单/加载用 list_skills / use_skill，删除用 skill_delete。'
+      + '技能正文默认**按需加载**（不占上下文，所以适合写长），清单每轮都注入——description 要写清"什么时候该用它"。\n'
+      + '· 记忆（Memory）= **事实与结论**：用户偏好与习惯、定下来的结论、项目在哪、跑法与踩过的坑（"以后需要知道 X"）。'
+      + '三类按作用域分：**全局记忆**（跨会话、跟人走）、**项目记忆**'
       + '（跟着"当前项目"走，存在 STATE_DIR/agent/<账号>/projects/<项目id>/memory/*.md —— '
       + '每条记忆一个 Markdown 文件，MEMORY.md 是索引）、**会话记忆**（只在本对话有效）；'
       + '增删改查用 memory_write / memory_search / memory_read / memory_forget（scope 取 global / project / session）。\n'
+      + '· **同一件事只写一处**：装好一个工具、跑通一套流程 → 用 skill_write 写成技能（那是"怎么做"），'
+      + '**不要在记忆里再抄一份**（技能清单与正文会按需注入，记忆不是技能的第二份备份）；'
+      + '反过来，事实（谁、什么、在哪、结论）进记忆，不要塞进技能正文。'
+      + '要记"本机装了某工具"这类事实时只写一句结论，正文留在技能里。\n'
       + '· 用户常见的技能目录（只在要装现成技能时用得上）：~/.agents/skills、~/.zcode/skills、~/.claude/skills——'
       + '它们默认**不在可访问目录里**，先请用户加进「设置 → 权限与工具 → 可访问目录」再装。\n'
       + '· 上面那两个服务端文件不必去读（多半在可访问目录之外）；用户问"技能/记忆存在哪"，用这几句回答即可。' },
@@ -110,7 +118,7 @@ const DEFAULTS = [
   /* ---- 记忆（Memory）：会话记忆 + 全局记忆，替代原先的 MCP 文件工具 ---- */
   { id: 'tool.memory_write.desc', group: 'tools', kind: 'tool', name: '写记忆 memory_write',
     desc: 'memory_write 的注入说明——什么时候该记、记到哪里。这段文字直接决定模型会不会主动记忆。',
-    text: '你可以把值得长期保留的事实写进记忆：\n'
+    text: '你可以把值得长期保留的**事实**写进记忆（记忆不是技能：可复用的做法用 skill_write，别写进记忆）：\n'
       + '· scope="global"（全局记忆，跨会话，跟着用户走）：用户的偏好与习惯、长期有效的事实、'
       + '他明确要求"记住"的内容；\n'
       + '· scope="project"（项目记忆，跟着**当前项目**走，换项目就换一份）：这个项目的结构、'
@@ -120,7 +128,7 @@ const DEFAULTS = [
       + '这次才成立的中间事实（比如刚查到的数据、定下的方案）。\n'
       + '写法：title 用一句能认出来的短标题（同标题会合并更新，不会重复堆积），content 写清事实本身'
       + '（必要的背景 + 结论），tags 可选。不要记录寒暄、过程性废话、可以从上下文直接看到的内容；'
-      + '不确定是否长期有效时先用 session。' },
+      + '不确定是否长期有效时先用 session。**同一件事只写一处**：写成了技能就不要在这里再抄一遍。' },
   { id: 'tool.memory_read.schema.desc', group: 'tools', kind: 'schema', name: 'memory_read 的 schema 描述',
     desc: '按 id 或标题取回一条记忆的正文。', text: '按 id 或标题读取一条记忆的完整内容（系统提示里只给了索引与摘要）。' },
   { id: 'tool.memory_search.schema.desc', group: 'tools', kind: 'schema', name: 'memory_search 的 schema 描述',
@@ -148,10 +156,12 @@ const DEFAULTS = [
 
   /* ---- 技能自造（self-extensible，Pi 的做法） ---- */
   { id: 'tool.skill_write.desc', group: 'tools', kind: 'tool', name: '写技能 skill_write',
-    desc: '自造技能工具的说明（新建/改写一份技能，正文不占上下文）。',
+    desc: '自造技能工具的说明（新建/改写一份技能，正文不占上下文；与记忆是两套，不要两处都写）。',
     text: '你可以把攒下来的工作步骤或规范写成"技能"（skill_write，新建或同名改写）。'
       + 'description 要写清"什么时候该用它"（它决定你以后会不会想起来加载），正文写步骤与检查清单。'
       + 'auto=true（默认）= 按需加载，正文不占上下文；auto=false = 每轮都注入（只适合短而通用的约定）。'
+      + '**技能与记忆是两套东西**：技能记"怎么做"，记忆记"事实"——写进技能就别再往记忆里抄一份'
+      + '（技能清单与正文会按需注入，记忆不是它的备份）。'
       + '改动会先弹确认框，用户点头才写入。' },
   { id: 'tool.skill_write.schema.desc', group: 'tools', kind: 'schema', name: 'skill_write 的 schema 描述',
     desc: '新建或改写技能（需要用户确认，可在界面里关掉确认）。',

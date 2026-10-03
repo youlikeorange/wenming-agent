@@ -218,6 +218,30 @@ test('AgentDefs：联网搜索的登录 + 技能开关闸门', () => {
   assert.equal(AgentDefs.searchOn(), true, '恢复开关后重新注册');
 });
 
+test('★ 内置联网搜索关掉后：工具不注册，相关提示词也不注入（2026-10-03「权限与工具」的开关）', async () => {
+  /* 开关就是提示词登记表里那条内置技能（skill.web_search）的启停——「权限与工具 → 联网搜索」
+     那一行只是它的视图（写 setPromptEnabled）。这里守住关掉之后的两件事：
+       · 注册：activeToolDefs 里没有 web_search（它的 schema 描述也就不会发给模型）；
+       · 注入：system 里没有那条技能正文，连工具名都不出现。 */
+  const { Assemble } = await import('../src/core/assemble.js');
+  const { TOOL_DEFAULTS } = await import('../src/core/params.js');
+  const memStub = { fullBlock: () => null, indexBlock: () => null, projectBlock: () => null, sessionBlock: () => null };
+  const env = { params: {}, Prompts, Memory: memStub, AgentDefs, AgentPolicy, TOOL_DEFAULTS };
+  initDefs();
+  Prompts.setEnabled('skill.web_search', true);
+  const on = Assemble.promptBlocks(env);
+  assert.ok(on.tools.includes('web_search'), '开启时注册 web_search');
+  assert.ok(on.blocks.some((b) => b.id === 'skill.web_search'), '开启时注入联网搜索的技能正文');
+  Prompts.setEnabled('skill.web_search', false);
+  const off = Assemble.promptBlocks(env);
+  assert.ok(!off.tools.includes('web_search'), '关闭时工具清单里没有 web_search');
+  assert.ok(!off.blocks.some((b) => b.id === 'skill.web_search'), '关闭时不再注入它的技能正文');
+  const sys = Assemble.systemMessage(env);
+  assert.ok(!/web_search/.test(sys ? sys.content : ''), 'system 里连工具名都不出现（schema 描述只在工具定义里）');
+  Prompts.setEnabled('skill.web_search', true);       // 还原：默认实例在多个用例间共用
+  assert.ok(Assemble.promptBlocks(env).tools.includes('web_search'), '恢复开关后重新注册 + 注入');
+});
+
 test('AgentDefs：技能与记忆工具的开关', () => {
   initDefs({ val2: valMap({ skill_tools_on: false, tool_mem_on: false }) });
   assert.deepEqual(AgentDefs.skillsToolDefs(), [], '关掉技能能力 → 不注册技能工具');
@@ -539,9 +563,15 @@ test('ToolRunner：stripBadArgs 去掉解析失败标记（__badArgs / __raw）'
 });
 
 test('ToolRunner：pluginLimits 把面板限额随每次调用下发', () => {
-  initRunner({ val2: (k) => ({ plugin_fs_read_kb: 128, plugin_exec_out_kb: 32, plugin_exec_timeout: 30 })[k] });
-  assert.deepEqual(ToolRunner.pluginLimits(), { read_kb: 128, out_kb: 32, timeout_sec: 30 },
-    '读取/输出/超时三项限额来自 val2');
+  initRunner({
+    val2: (k) => ({
+      plugin_fs_read_kb: 128, plugin_fs_write_kb: 512, plugin_fs_nodes: 300,
+      plugin_exec_out_kb: 32, plugin_exec_timeout: 30,
+    })[k],
+  });
+  assert.deepEqual(ToolRunner.pluginLimits(),
+    { read_kb: 128, write_kb: 512, nodes: 300, out_kb: 32, timeout_sec: 30 },
+    '五项限额都来自 val2（服务端再按硬上限收敛一次）');
 });
 
 test('ToolRunner：联网搜索走同源代理，401 时给模型明确的话', async () => {

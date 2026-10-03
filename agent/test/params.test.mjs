@@ -1,7 +1,8 @@
 /* core/params.js 单测（新写；旧聊天台没有对应单测文件）：
  *   · resolve() 三层覆盖：出厂默认 → 全局设置 → 每模型覆盖（空值 = 用上一层）；
  *   · toRequestParams() 的"默认值不下发"：扩展字段（top_k / seed / 频率惩罚…）默认不出现在请求参数里；
- *   · normalizeValue() 夹紧：range/number 越界夹回、非法值回落、switch/select/list 收敛；
+ *   · normalizeValue() / normalizeParam() 夹紧：range/number 越界夹回、非法值回落、switch/select/list 收敛、
+ *     list 兼容旧字符串形状、lines/json 与未知键原样（归一化的唯一入口，前后端共用）；
  *   · parseExtraBody()：非法 JSON / 非对象一律返回 null；
  *   · ctxLimitOf() 的取值优先级，以及 TOOL_DEFAULTS 与 TOOL_FIELDS 的推导关系。 */
 import test from 'node:test';
@@ -10,7 +11,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   FIELDS, TOOL_FIELDS, TOOL_DEFAULTS, PRESETS, GROUPS,
-  resolve, modelKey, overriddenBy, normalizeValue, toStopList, toRequestParams, ctxLimitOf, parseExtraBody,
+  resolve, modelKey, overriddenBy, normalizeValue, normalizeParam, normalizeParamBag,
+  toStopList, toRequestParams, ctxLimitOf, parseExtraBody,
 } from '../src/core/params.js';
 
 test('resolve()：出厂默认（没有任何设置时逐项取 def）', () => {
@@ -19,7 +21,7 @@ test('resolve()：出厂默认（没有任何设置时逐项取 def）', () => {
   assert.equal(p.topP, 0.8, 'top_p 出厂默认 0.8');
   assert.equal(p.maxTokens, -1, 'max_tokens 出厂默认 -1（不下发）');
   assert.equal(p.reasoning, 'default', '推理强度默认 default（完全不下发）');
-  assert.equal(p.ctxLimit, 32768, '上下文上限默认 32768');
+  assert.equal(p.ctxLimit, 1000000, '上下文上限默认 100 万（1M 级模型；本地小模型要在面板里按实际 -c 改）');
   assert.equal(p.tool_search_max, 3, '工具参数同样在参数表里：单轮检索 3');
   assert.equal(p.plugin_exec_max, 6, '单轮命令上限 6');
   assert.equal(p.mem_inject, 'index', '全局记忆默认只给索引');
@@ -152,6 +154,20 @@ test('参数表元数据：GROUPS 覆盖生成参数的 group、PRESETS 只写�
   assert.deepEqual(badKey, [], '预设只写 FIELDS/TOOL_FIELDS 里存在的键');
 });
 
+test('★ 面板归位：模型参数（参数页）与工具参数（权限与工具页）键集不相交，工具项不再两页都有', () => {
+  const both = Object.keys(FIELDS).filter((k) => k in TOOL_FIELDS);
+  assert.deepEqual(both, [], '同一个键不能同时出现在两页：' + both.join('、'));
+  /* 源码级守门：参数页不许再画 TOOL_FIELDS。2026-10-03 之前它有一段「Agent 行为」区块，
+     与「权限与工具」逐行重复（同一项两处可改，改哪边生效看不出来）。
+     先把注释剥掉再判：文件头的说明里会提到 TOOL_FIELDS（那是文档，不是渲染）。 */
+  const stripComments = (s) => s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^[ \t]*\/\/.*$/gm, '');
+  const srcDir = path.join(path.dirname(new URL(import.meta.url).pathname), '..', 'src');
+  const paramsSrc = stripComments(fs.readFileSync(path.join(srcDir, 'ui/features/settings/ParamsSection.jsx'), 'utf8'));
+  assert.ok(!/TOOL_FIELDS/.test(paramsSrc), 'ParamsSection 不该引用 TOOL_FIELDS（工具项只留在「权限与工具」）');
+  const toolsSrc = stripComments(fs.readFileSync(path.join(srcDir, 'ui/features/settings/ToolsSection.jsx'), 'utf8'));
+  assert.ok(/TOOL_FIELDS/.test(toolsSrc), 'ToolsSection 是工具参数的唯一界面入口');
+});
+
 test('TOOL_DEFAULTS 从 TOOL_FIELDS 推导，键集与值完全一致（唯一真源，没有第二份副本）', () => {
   const sortEntries = (o) => Object.entries(o).sort(([a], [b]) => (a < b ? -1 : 1));
   assert.deepEqual(sortEntries(TOOL_DEFAULTS), sortEntries(Object.fromEntries(
@@ -175,4 +191,60 @@ test('★ 代码里读的每个参数键都存在于 TOOL_FIELDS / FIELDS（防�
   assert.ok(keys.size > 10, '应当扫到一批参数键（实际 ' + keys.size + '）');
   const unknown = [...keys].filter((k) => !(k in TOOL_FIELDS) && !(k in FIELDS));
   assert.deepEqual(unknown, [], '这些键在 TOOL_FIELDS/FIELDS 里不存在：' + unknown.join('、'));
+});
+
+test('normalizeParam：单键归一（list 用 asStringList、lines/json 原样、未知键原样）', () => {
+  assert.equal(normalizeParam('temperature', 1e9), 2, 'range 越界夹到 max');
+  assert.equal(normalizeParam('temperature', -3), 0, 'range 越界夹到 min');
+  assert.equal(normalizeParam('plugin_fs_max', 'abc'), '', '非法数字 → 空值（= 用上一层）');
+  assert.equal(normalizeParam('mem_inject', 'nope'), 'index', 'select 非法选项回落出厂默认');
+  assert.equal(normalizeParam('plugin_fs_delete', 1), true, 'switch 转布尔');
+  assert.deepEqual(normalizeParam('exec_allow', 'git status\ngit log'), ['git status', 'git log'],
+    'list 容忍旧的换行字符串（不能用 normalizeValue：它把非数组抹成空数组）');
+  assert.deepEqual(normalizeParam('exec_allow', ['a', 'a', 'b']), ['a', 'a', 'b'], 'list 数组原样（去空白，不去重）');
+  assert.equal(normalizeParam('stop', 42), 42, 'lines 原样保留（不做 String() 转换）');
+  assert.deepEqual(normalizeParam('extraBody', { a: 1 }), { a: 1 }, 'json 原样保留（不变成 "[object Object]"）');
+  assert.deepEqual(normalizeParam('brand_new_param', { x: 1 }), { x: 1 }, '未知键原样保留');
+});
+
+test('normalizeParamBag：整袋归一；非对象 → 空袋', () => {
+  const bag = normalizeParamBag({ temperature: 9, exec_allow: 'ls\npwd', keepme: 1 });
+  assert.equal(bag.temperature, 2);
+  assert.deepEqual(bag.exec_allow, ['ls', 'pwd']);
+  assert.equal(bag.keepme, 1);
+  assert.deepEqual(normalizeParamBag(null), {});
+  assert.deepEqual(normalizeParamBag('nope'), {});
+  assert.deepEqual(normalizeParamBag([1, 2]), {});
+});
+
+test('★ resolve()：盘上的越界值在读取端就被夹回（历史数据/外部写入的兜底）', () => {
+  const p = resolve({ params: { temperature: 1e9, ctxLimit: 1 }, paramsByModel: { 'p1::m1': { topK: 999999 } } }, 'p1', 'm1');
+  assert.equal(p.temperature, 2, '全局参数越界 → 夹回上限');
+  assert.equal(p.ctxLimit, 512, 'ctxLimit 低于 min=512 → 夹回 512');
+  assert.equal(p.topK, 1000, '每模型覆盖同样被夹回（max=1000）');
+});
+
+test('★ 有服务端硬上限的参数在 schema 里声明 max（面板不会显示一个做不到的数）', () => {
+  /* 子智能体的并发/轮次在服务端被 clampInt(…, hi) 夹住；schema 若不写 max，
+     面板能填 100 而实际只有 30——"显示的值 ≠ 生效的值"是本次归一化要收掉的口径。 */
+  assert.equal(TOOL_FIELDS.subagent_parallel.max, 8, '并发上限 8 要写进 schema');
+  assert.equal(TOOL_FIELDS.subagent_rounds.max, 30, '轮次上限 30 要写进 schema');
+  assert.equal(normalizeParam('subagent_parallel', 99), 8, '越界并发被夹到 8');
+  assert.equal(normalizeParam('subagent_rounds', 100), 30, '越界轮次被夹到 30');
+});
+
+test('★ 结果与记录：追踪条上限的默认值/范围写在 schema（4000 不再是散落各处的魔数）', () => {
+  /* 这三项原先各自硬编码在 core/agent.js、ui/state/host.js、lib/agent/run-loop.js、
+     lib/agent/run-subagent.js（两处）、core/context.js、lib/agent/run.js —— 共七处 4000。
+     现在默认值只在 schema 里写一次；每处的取值都必须经 val2（照上面的键名扫描用例）。 */
+  assert.equal(TOOL_FIELDS.record_trace_chars.def, 4000, '追踪条单条结果默认 4000（与旧行为一致，升级不改现有效果）');
+  assert.equal(TOOL_FIELDS.record_args_chars.def, 2000, '参数截断默认 2000（与 core/agent.js 的 ARG_STR_MAX 一致）');
+  assert.equal(TOOL_FIELDS.record_compact_chars.def, 4000, '压缩输入单条默认 4000');
+  assert.equal(normalizeParam('record_trace_chars', 1e9), 200000, '越界被夹到 20 万字（= 服务端单条记录上限）');
+  assert.equal(normalizeParam('record_trace_chars', 10), 500, '低于下限被夹到 500');
+  assert.equal(normalizeParam('record_args_chars', 'abc'), '', '非法数字 → 空值（= 用上一层）');
+  assert.equal(TOOL_FIELDS.subagent_steps.def, 200, '子智能体转录默认保留 200 步（与旧行为一致）');
+  /* 只能收紧的两项：默认值 = 服务端硬上限本身（升级后行为不变，用户可以往下调） */
+  assert.equal(TOOL_FIELDS.plugin_fs_write_kb.def, 4096, '单次写入默认 4MB（服务端硬上限同值）');
+  assert.equal(TOOL_FIELDS.plugin_fs_nodes.def, 800, '目录树/找文件默认 800 项（服务端硬上限同值）');
 });

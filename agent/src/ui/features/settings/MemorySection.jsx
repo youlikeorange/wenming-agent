@@ -122,7 +122,9 @@ function MemoryColumn({ scope, title, hint, extra }) {
   );
 }
 
-/** 项目记忆那一栏的头顶：没项目时先说清"为什么这里是空的、去哪建项目" */
+/** 项目记忆那一栏的头顶：没项目时先说清"为什么这里是空的、去哪建项目"；
+ *  有项目但**条目还没取回来**（读取失败/正在读）时也必须说清——否则"空"看起来就像
+ *  "这个项目没有记忆"，而实际服务端可能有（2026-10-03 清空事故的教训：看不见的状态最危险）。 */
 function ProjectHint() {
   const meta = Memory.projectMeta;
   if (!meta) {
@@ -135,6 +137,12 @@ function ProjectHint() {
   }
   return (
     <div className="mb-2 space-y-0.5 font-mono text-[11px] text-muted-foreground">
+      {Memory.projectLoaded ? null : (
+        <NoteBox tone="warn" title="还没读到项目记忆">
+          这份条目还没从服务端取回来（正在读取，或上次读取失败）。这不代表这个项目没有记忆——
+          为避免拿空列表误覆盖服务端那份，此时本机不会把项目记忆写回去。重开这一节或切一次项目会重新读取。
+        </NoteBox>
+      )}
       <span className="block truncate" title={meta.root}>根目录 {meta.root}</span>
       {meta.memoryDir ? <span className="block truncate" title={meta.memoryDir}>记忆文件夹 {meta.memoryDir}</span> : null}
     </div>

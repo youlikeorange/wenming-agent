@@ -65,18 +65,28 @@ const fingerprint = (name, args) => {
  *  为什么必须有：write_file / edit_file 的参数里带着**整个文件内容**（上限 4MB），
  *  会话记录里存一份原文，每次落盘就要序列化几 MB、界面展开"参数"也要在 DOM 里放几 MB ——
  *  写大文件时页面卡死的主因之一（实测）。路径这类短字段照原样留着，界面标题仍然对。
- *  只截**值**、不动键，复制出来的参数至少还能看出结构。 */
+ *  只截**值**、不动键，复制出来的参数至少还能看出结构。
+ *  上限可在面板「权限与工具 → 结果与记录」调（`record_args_chars`），默认 2000。 */
 const ARG_STR_MAX = 2000;
-function shrinkArgs(args) {
+function shrinkArgs(args, max) {
   if (!args || typeof args !== 'object') return args;
+  const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : ARG_STR_MAX;
   const out = {};
   for (const [k, v] of Object.entries(args)) {
-    if (typeof v === 'string' && v.length > ARG_STR_MAX) {
-      out[k] = v.slice(0, ARG_STR_MAX) + `…（共 ${v.length} 字，已截断）`;
+    if (typeof v === 'string' && v.length > cap) {
+      out[k] = v.slice(0, cap) + `…（共 ${v.length} 字，已截断）`;
     } else out[k] = v;
   }
   return out;
 }
+
+/** 追踪条里单条工具结果的字数上限：默认 4000，面板 `record_trace_chars` 可调。
+ *  它只管"记录/显示"——发给模型的工具结果原文不受它限制（见下面的 context.concat）。 */
+const TRACE_CHARS = 4000;
+const traceCap = (cfg) => {
+  const n = Number(cfg && cfg.traceChars);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : TRACE_CHARS;
+};
 
 /* 哪些工具重复调用是**正常**的（不该拦）：
    读类在"写完再读回来核对"时参数就是一模一样的；写类改完同一个文件再写全文、
@@ -107,6 +117,8 @@ const toMessages = (items) => (items || []).map((m) => (typeof m === 'string' ? 
  *   toolMode(name) -> 'parallel'|'sequential' 工具执行策略（默认 parallel；写类工具宜 sequential）
  *   transformContext(messages) -> Promise<messages>  上下文变换（压缩在这里做；返回发给模型的最终消息）
  *   guardDuplicate(bool)   同一参数重复调用是否直接回绝（默认开）
+ *   traceChars(number) 追踪条里单条工具结果的字数上限（默认 4000，面板 record_trace_chars）
+ *   argsChars(number)  追踪条里参数长字符串的截断上限（默认 2000，面板 record_args_chars）
  *   texts { truncated, guard, maxRounds, noContent }  循环内文案（宿主从提示词登记表注入，可改）
  *   hooks { onStart,onTurnStart,onTurnEnd,onDelta,onToolStart,onToolEnd,onNotice,onStop,onEnd }
  *        onNotice 的 kind 是结构化的：'empty_retry' | 'truncated' | 'max_rounds' | 'error'（error 同时会 throw）
@@ -151,6 +163,8 @@ async function run(cfg) {
   const H = cfg.hooks || {};
 
   const maxRounds = Number.isFinite(cfg.maxRounds) ? cfg.maxRounds : 8;
+  /* 记录类上限（面板「结果与记录」）：只影响追踪条/落盘，不影响发给模型的内容 */
+  const caps = { trace: traceCap(cfg) };
   const seen = new Set();                    // 已成功执行过的工具指纹
   const trace = [];                          // 本轮工具调用记录（随消息落盘）
   let context = (cfg.messages || []).slice();
@@ -322,9 +336,13 @@ async function run(cfg) {
           }
           const ms = t0 == null ? 0 : Math.round(((globalThis.performance || Date).now()) - t0);
           call(H.onToolEnd, { call: c, token: item.token, result, ms });
+          const fullText = String(result.text || '');
           trace.push({
             name: c.name, label: c.name, ok: result.ok, note: result.note || '',
-            args: shrinkArgs(c.args), ms, result: String(result.text || '').slice(0, 4000),
+            args: shrinkArgs(c.args, cfg.argsChars), ms, result: fullText.slice(0, caps.trace),
+            /* 真实字数（**未截断前**）：追踪条据此显示"模型实际收到多少 / 这里只显示前 N 字"。
+               上限只截记录正文、不截这个计数——否则界面上会变成"无论读了多少都显示 4000"。 */
+            resultChars: fullText.length,
             /* 可下载文件清单（deliver_file）：内核自己的 trace 也带上，与实时追踪条同一形状——
                两条 trace 都可能有下游消费者（收尾合并 / 落盘），少一处就会"卡片只在一边有"。 */
             ...(result.files && result.files.length ? { files: result.files } : {}),

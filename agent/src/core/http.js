@@ -72,6 +72,9 @@ function apiError(res, data) {
     needGrant: !!d.needGrant,
     needPermission: !!d.needPermission,
     needRoots: !!d.needRoots,
+    /* 409 冲突（整份覆盖被拒：拿空/陈旧快照去写项目记忆）：调用方据此**重新取回**而不是重试
+       （见 core/store.js 的 send 与 ui/state/projects.js 的 refreshCurrentMemory）。 */
+    conflict: !!d.conflict,
   }));
 }
 

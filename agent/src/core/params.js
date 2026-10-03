@@ -54,9 +54,10 @@ export const FIELDS = {
       + '"默认" = 完全不下发，交给服务端自己决定。',
   },
   ctxLimit: {
-    label: '上下文上限（本界面的用量环）', group: 'context', kind: 'number', def: 32768, min: 512, step: 512, always: false,
+    label: '上下文上限（本界面的用量环）', group: 'context', kind: 'number', def: 1000000, min: 512, step: 512, always: false,
     tip: '只影响本界面的用量显示与自动压缩阈值——它不发给模型（协议里没有这个字段）。'
-      + '本地模型请填该模型实际加载的上下文长度（如 32768），云端模型填服务端上限。',
+      + '云端模型填服务端上限（1M 级模型填 1000000 或 1048576）；本地模型**必须**填该模型实际加载的'
+      + '上下文长度（如 llama.cpp 的 -c 32768）——填大了不会报错，但超出部分会被静默截断。',
   },
   extraBody: {
     label: '额外请求体（JSON）', group: 'context', kind: 'json', def: '',
@@ -120,6 +121,10 @@ export const TOOL_FIELDS = {
     tip: '只读操作不计入；写/改/建/移/删才扣次数。' },
   plugin_fs_read_kb: { label: '单次读取上限', group: 'fs', kind: 'number', def: 64, min: 1, step: 1, unit: 'KB',
     tip: '一次 read_file 最多返回多少（超出部分用 start_line/end_line 分段读）。服务端另有硬上限。' },
+  plugin_fs_write_kb: { label: '单次写入上限', group: 'fs', kind: 'number', def: 4096, min: 1, step: 1, unit: 'KB',
+    tip: '一次 write_file 最多写多少（edit_file 改完的结果也受它约束）。服务端硬上限 4MB，这里只能更小。' },
+  plugin_fs_nodes: { label: '目录树/找文件结果上限', group: 'fs', kind: 'number', def: 800, min: 10, step: 10, unit: '项',
+    tip: 'directory_tree 与 search_files 一次最多返回多少项（服务端硬上限 800，这里只能更小）。' },
   plugin_exec_on: { label: '命令行工具', group: 'exec', kind: 'switch', def: true,
     tip: '以**绑定的本机账号**执行 shell 命令——能做到什么完全由那个账号在系统里的权限决定。' },
   plugin_exec_confirm: { label: '执行前确认', group: 'exec', kind: 'switch', def: true, customOnly: true,
@@ -128,17 +133,40 @@ export const TOOL_FIELDS = {
     tip: '一轮里最多执行几条命令。' },
   plugin_exec_timeout: { label: '单条命令超时', group: 'exec', kind: 'number', def: 60, min: 1, step: 1, unit: '秒',
     tip: '超过就杀掉整个进程组。服务端硬上限（默认 600 秒）之下才有效。' },
-  plugin_exec_out_kb: { label: '输出上限', group: 'exec', kind: 'number', def: 16, min: 1, step: 1, unit: 'KB',
-    tip: 'stdout+stderr 各自的上限，超出截断（并注明已截断）。' },
+  plugin_exec_out_kb: { label: '输出上限（命令输出与工具结果）', group: 'exec', kind: 'number', def: 16, min: 1, step: 1, unit: 'KB',
+    tip: 'stdout+stderr 各自的上限，超出截断（并注明已截断）；同一上限也作用于**所有工具结果**——'
+      + '读大文件时截到它（服务端硬上限在下面「结果与记录」里说明）。' },
+  /* ---- 结果与记录：一条工具结果"记多少、留多少"（原先全部硬编码 4000，用户撞到就说不出话） ---- */
+  record_trace_chars: { label: '追踪条单条结果上限', group: 'record', kind: 'number', def: 4000, min: 500, max: 200000, step: 500, unit: '字',
+    tip: '工具结果写进追踪条/会话记录的字数上限——读到一篇长文档时，截断的就是它。'
+      + '**只影响记录与显示**（发给模型的内容不受它限制，也不影响工具真正读了什么）；'
+      + '调大会让会话文件变大（单条服务端硬上限 20 万字）。' },
+  record_args_chars: { label: '追踪条单条参数上限', group: 'record', kind: 'number', def: 2000, min: 200, max: 200000, step: 100, unit: '字',
+    tip: '工具参数里长字符串（write_file 的整篇正文等）在记录里最多留多少字，防止"写一次大文件、记录里存一份原文"。' },
+  record_compact_chars: { label: '压缩输入单条上限', group: 'record', kind: 'number', def: 4000, min: 500, max: 200000, step: 500, unit: '字',
+    tip: '上下文压缩时，较早的每条消息最多取多少字交给模型做摘要。调大摘要更完整，但摘要请求本身更大、更慢、更贵。' },
   subagent_on: { label: '子智能体（spawn_agent）', group: 'subagent', kind: 'switch', def: true,
     tip: '允许模型把一件独立的事交给子智能体去跑：它有自己的一段上下文与工具集，只把结论带回主对话'
       + '（主对话不必装下它翻过的所有中间内容）。关掉后不注册这个工具。' },
   tool_subagent_max: { label: '单轮最多派几次', group: 'subagent', kind: 'number', def: 3, min: 1, step: 1,
     tip: '一轮对话里最多调用几次 spawn_agent（子智能体内部的工具调用不算在这里，走它自己的预算）。' },
-  subagent_parallel: { label: '同时最多几个', group: 'subagent', kind: 'number', def: 2, min: 1, step: 1,
-    tip: '同时在跑的子智能体上限；超出的排队执行，不会丢任务（子智能体之间互不共享上下文）。' },
-  subagent_rounds: { label: '每个最多几轮', group: 'subagent', kind: 'number', def: 6, min: 1, step: 1,
-    tip: '子智能体最多"想一步—调工具"几轮，到点必须给结论（防止一个子任务无限跑下去）。' },
+  subagent_parallel: { label: '同时最多几个', group: 'subagent', kind: 'number', def: 2, min: 1, max: 8, step: 1,
+    tip: '同时在跑的子智能体上限（服务端硬上限 8）；超出的排队执行，不会丢任务（子智能体之间互不共享上下文）。' },
+  subagent_rounds: { label: '每个最多几轮', group: 'subagent', kind: 'number', def: 6, min: 1, max: 30, step: 1,
+    tip: '子智能体最多"想一步—调工具"几轮（服务端硬上限 30），到点必须给结论（防止一个子任务无限跑下去）。'
+      + '这是硬上限：模型只能在单次调用里要求更少，不能更多。' },
+  subagent_steps: { label: '每个转录保留几步', group: 'subagent', kind: 'number', def: 200, min: 10, max: 2000, step: 10, unit: '步',
+    tip: '"查看子智能体记录"里最多保留多少次工具调用（每步的结果按「追踪条单条结果上限」截断）。' },
+  subagent_search_max: { label: '每个最多检索几次', group: 'subagent', kind: 'number', def: 2, min: 1, step: 1,
+    tip: '一个子智能体内部最多联网检索几次。与主对话的「单轮最多检索」分开计，互不占用。' },
+  subagent_mem_max: { label: '每个最多记忆/技能几次', group: 'subagent', kind: 'number', def: 4, min: 1, step: 1,
+    tip: '子智能体内部"写记忆 / 忘记忆 / 新建·改写·删除技能 / 装技能"的合计上限；只读的不扣（与主对话分开计）。'
+      + '仅在开启「允许子智能体改东西」后才会被用到——不开它连这些工具都拿不到。' },
+  subagent_fs_max: { label: '每个最多文件操作几次', group: 'subagent', kind: 'number', def: 10, min: 1, step: 1,
+    tip: '子智能体内部写文件/改文件/建目录/移动/删除的合计上限；只读的文件工具不扣（与主对话分开计）。' },
+  subagent_exec_max: { label: '每个最多命令几条', group: 'subagent', kind: 'number', def: 4, min: 1, step: 1,
+    tip: '子智能体内部最多执行几条命令（每条仍会单独弹确认/授权窗）。'
+      + '只在开启「允许子智能体改东西」时生效——不开它连命令工具都拿不到。' },
   subagent_write: { label: '允许子智能体改东西', group: 'subagent', kind: 'switch', def: false,
     tip: '默认子智能体**只读**（读文件/找文件/联网搜索/查记忆/加载技能）。开启后它才能写文件、执行命令、'
       + '写记忆——这些操作依旧会弹确认框，并且同样受访问级别与绑定账号权限限制。' },
@@ -165,9 +193,11 @@ export function resolve(settings, providerId, model) {
   const out = {};
   for (const [k, f] of Object.entries(FIELDS)) out[k] = f.def;
   for (const [k, f] of Object.entries(TOOL_FIELDS)) out[k] = f.def;
-  Object.assign(out, pickNonBlank(settings && settings.params));
+  /* 两层都过一遍**逐键归一**：磁盘上的旧值、手工改过的值、外部通道写进来的值
+     都在这里被夹回 schema 范围——这是读取端兜底（写入端也归一，见 normalizeParam 的注释）。 */
+  Object.assign(out, normalizeParamBag(pickNonBlank(settings && settings.params)));
   const key = modelKey(providerId, model);
-  if (key && settings && settings.paramsByModel) Object.assign(out, pickNonBlank(settings.paramsByModel[key]));
+  if (key && settings && settings.paramsByModel) Object.assign(out, normalizeParamBag(pickNonBlank(settings.paramsByModel[key])));
   return out;
 }
 
@@ -220,6 +250,31 @@ export function toStopList(v) {
 export const asStringList = (v) => (Array.isArray(v)
   ? v.map((x) => String(x).trim()).filter(Boolean)
   : String(v == null ? '' : v).split(/[\n,]+/).map((s) => s.trim()).filter(Boolean));
+
+/** 单个参数的归一化（**唯一入口**：前端 setParam 与服务端落盘前都调它）。
+ *  · 已知键按 schema 收敛：number/range 夹范围、非法数字回落空值（= 用上一层）、
+ *    select 非法选项回落出厂默认、switch 转布尔；
+ *  · `list` 走 asStringList：容忍历史遗留的"换行/逗号分隔字符串"，**不能**用
+ *    normalizeValue（它把非数组直接变空数组，等于把用户的命令允许清单抹掉——踩过）；
+ *  · `lines`/`json` 原样保留：值是用户的自由文本，normalizeValue 的 String() 会把
+ *    误存成对象的形状变成 "[object Object]"，那是毁数据而不是归一化；
+ *  · **未知键原样保留**：服务端可能暂时跑着旧代码（新客户端 + 未重启的服务端），
+ *    schema 认不出的键不该被静默丢（本项目踩过：新增字段漏在白名单外 = "存了但没了"）。 */
+export function normalizeParam(key, v) {
+  const f = TOOL_FIELDS[key] || FIELDS[key];
+  if (!f) return v;
+  if (f.kind === 'list') return asStringList(v);
+  if (f.kind === 'lines' || f.kind === 'json') return v;
+  return normalizeValue(f, v);
+}
+
+/** 一整袋参数（settings.params、paramsByModel 里的某一模型）逐键归一；非对象 → 空袋 */
+export function normalizeParamBag(bag) {
+  if (!bag || typeof bag !== 'object' || Array.isArray(bag)) return {};
+  const out = {};
+  for (const [k, v] of Object.entries(bag)) out[k] = normalizeParam(k, v);
+  return out;
+}
 
 /**
  * 参数 → 各协议通用的请求字段（canonical）。

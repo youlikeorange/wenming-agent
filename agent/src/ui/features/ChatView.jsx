@@ -1,7 +1,8 @@
 // ChatView.jsx —— 消息列表容器：空状态、压缩摘要与自动裁剪提示条（Marker 风格）、滚动策略、代码复制事件委托
-import { useEffect, useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import { Bot, Brain, FolderTree, Globe } from 'lucide-react';
 import { AgentContext } from '../../core/context.js';
+import { Prompts } from '../../core/prompts.js';
 import { openDrawer } from '../state/session.js';
 import { compactNow, uncompact } from '../state/settings.js';
 import { hooks } from '../state/host.js';
@@ -12,15 +13,21 @@ import Message from './Message.jsx';
 import SessionOutline from './SessionOutline.jsx';
 import { handleCodeCopy, requestScrollBottom, takeScrollBottom } from './chat-utils.js';
 
-/* 欢迎页的建议 chips：点一下把整句填进输入框（不直接发送，用户还能改） */
+/* 欢迎页的建议 chips：点一下把整句填进输入框（不直接发送，用户还能改）。
+   needSearch 那条跟着内置联网搜索的开关走（「权限与工具 → 联网搜索」）：关掉之后模型连
+   web_search 都没有，不该在欢迎页摆一条它做不到的建议。 */
 const SUGGESTIONS = [
   { icon: FolderTree, text: '看看当前项目：列一下目录结构，说说它是做什么的' },
-  { icon: Globe, text: '联网搜一下最近值得关注的 AI 动态，给我三条要点' },
+  { icon: Globe, needSearch: true, text: '联网搜一下最近值得关注的 AI 动态，给我三条要点' },
   { icon: Brain, text: '记住：我的时区是 Asia/Shanghai，涉及时间时按这个算' },
 ];
 
 /** 空状态：品牌标记 + 一句话 + 三个可点的建议 chips（底下保留「打 / 用模板」与「生成中回车 = 插话」两条提示） */
 function EmptyState() {
+  const { revision } = useApp();   // 订阅快照：内置搜索开关一变，下面的 chips 跟着换
+  const suggestions = useMemo(
+    () => { void revision; return SUGGESTIONS.filter((s) => !s.needSearch || Prompts.enabled('skill.web_search')); },
+    [revision]);
   return (
     <div className="rise flex flex-col items-center gap-4 px-6 py-16 text-center">
       <span className="grid size-12 place-items-center rounded-2xl bg-muted text-muted-foreground">
@@ -33,7 +40,7 @@ function EmptyState() {
         </p>
       </div>
       <div className="flex flex-wrap items-center justify-center gap-2">
-        {SUGGESTIONS.map((s) => (
+        {suggestions.map((s) => (
           <button
             key={s.text}
             type="button"

@@ -73,9 +73,12 @@ export function createToolRunner() {
     return agentStatus;
   }
 
-  /** 面板上的限额随每次调用下发给服务端（服务端会再 clamp 一次，只能比硬上限更小）。 */
+  /** 面板上的限额随每次调用下发给服务端（服务端会再 clamp 一次，只能比硬上限更小）。
+   *  键与面板的对应见 lib/agent/limits.js 的 effLimits 与 core/params.js 的 TOOL_FIELDS。 */
   const pluginLimits = () => ({
     read_kb: Number(C.val2('plugin_fs_read_kb')) || undefined,
+    write_kb: Number(C.val2('plugin_fs_write_kb')) || undefined,
+    nodes: Number(C.val2('plugin_fs_nodes')) || undefined,
     out_kb: Number(C.val2('plugin_exec_out_kb')) || undefined,
     timeout_sec: Number(C.val2('plugin_exec_timeout')) || undefined,
   });
@@ -281,6 +284,16 @@ export function createToolRunner() {
 
   /* ---------- 记忆：会话 + 项目 + 全局 ---------- */
 
+  /** 这段内容像不像一份"做法/流程"（技能）？——只用来给模型一句提示，不做任何拦截。
+   *  判据取**高精度**方向：够长（短条目多半是事实），且步骤/安装/命令/踩坑这类词扎堆出现。
+   *  宁可漏判（不提示）也不误判（对着一条"用户偏好"说"这更像技能"）。 */
+  const looksLikeHowTo = (content) => {
+    const c = String(content || '');
+    if (c.length < 400) return false;
+    const hits = ['步骤', '流程', '用法', '安装', '命令', '踩坑', '清单', '触发词'].filter((k) => c.includes(k)).length;
+    return hits >= 3;
+  };
+
   function runMemoryTool(name, args, budget) {
     if (name === 'memory_write') {
       if (!C.val2('mem_auto')) {
@@ -299,13 +312,18 @@ export function createToolRunner() {
       const r = C.Memory.write({ scope: realScope, title: args.title, content: args.content, tags: args.tags, source: 'model' });
       C.persistSession(); C.renderMemoryPanel(); C.updateCtxMeter();
       const where = { global: '全局', project: '项目', session: '会话' }[realScope];
+      /* 边界提示（2026-10-03）：内容看着像"做法/流程"（长、且步骤/安装/命令这类词扎堆）时提醒一句——
+         技能与记忆是两套，可复用的做法应该用 skill_write。只提示、不拦（内容本身仍按记忆保存）。 */
+      const skillish = looksLikeHowTo(args.content)
+        ? '\n（提示：这段内容更像一份"做法/流程"——如果希望以后反复照它做事，用 skill_write 存成技能更合适；'
+          + '技能与记忆是两套，同一件事写一处就好。）' : '';
       return { ok: true, note: r.updated ? '已更新记忆' : '已记住',
         text: `已写入${where}记忆「${r.entry.title}」（id ${r.entry.id}）。`
           + (wantProject
             ? '当前没有选中项目，所以先记在了**会话记忆**里；要按项目长期保留，请用户先在「设置 → 项目」里选一个项目根目录。'
             : realScope === 'global' ? '它会出现在之后每轮对话的记忆索引里。'
               : realScope === 'project' ? '它只在这个项目里有效，会出现在之后每一轮的项目记忆索引里。'
-                : '它只在本会话有效。') };
+                : '它只在本会话有效。') + skillish };
     }
     if (name === 'memory_search') {
       const hits = C.Memory.search(args.query, ['session', 'global', 'project'].includes(args.scope) ? args.scope : null);
@@ -373,7 +391,10 @@ export function createToolRunner() {
          旧写法就是它，于是模型建的技能只活在内存里，刷新即丢。 */
       C.renderPromptPanel(); C.updateCtxMeter();
       return { ok: true, note: existing ? '已改写技能' : '已新建技能',
-        text: `技能「${item.name}」已${existing ? '改写' : '创建'}（${item.auto === false ? '常驻注入' : '按需加载'}）。` };
+        text: `技能「${item.name}」已${existing ? '改写' : '创建'}（${item.auto === false ? '常驻注入' : '按需加载'}）。`
+          /* 边界提示（2026-10-03）：模型常常"技能写一份、记忆再抄一份"。技能清单与正文本来就会按需注入，
+             记忆不是它的备份——这一句放在**写入成功那一刻**，是压这个习惯最有效的时机。 */
+          + '技能与记忆是两套：技能记"怎么做"，记忆记"事实"——这份内容不必再往记忆里抄一遍（清单与正文会按需注入）。' };
     }
     // skill_delete
     const skillName = String(args.name || '').trim();

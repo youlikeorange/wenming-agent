@@ -1,11 +1,16 @@
-// ToolsSection.jsx —— 权限与工具：访问级别、命令允许清单、工具开关组、可访问目录、服务端上限与危险清单
-import { useState } from 'react';
+// ToolsSection.jsx —— 权限与工具：访问级别、命令允许清单、各工具开关与调用次数/上限、可访问目录、服务端上限与危险清单
+/*  边界（唯一一份，改动前先读）：**这一页只管工具与权限**——能不能用（访问级别 + 各工具开关）、
+ *  能调用几次（单轮/每个子智能体的次数）、单次能多大（读取/写入/超时/输出/记录上限），
+ *  模型本身的生成参数（温度、采样、上下文上限…）在「参数」（FIELDS）。
+ *  两页曾经各画一份工具参数（同键两处可改），2026-10-03 去重：工具项只留在这里。 */
+import { useMemo, useState } from 'react';
 import { FolderPlus, RotateCcw, Trash2 } from 'lucide-react';
 import { useApp } from '../../state/store.js';
 import { val2 } from '../../state/host.js';
 import { fmtBytes } from '../../lib/format.js';
-import { setParam, setRoots } from '../../state/settings.js';
+import { setParam, setPromptEnabled, setRoots } from '../../state/settings.js';
 import { TOOL_FIELDS, resolve } from '../../../core/params.js';
+import { Prompts } from '../../../core/prompts.js';
 import { AgentPolicy } from '../../../core/policy.js';
 import { cn } from '../../lib/utils.js';
 import { Badge } from '../../components/ui/badge.jsx';
@@ -23,6 +28,7 @@ const GROUPS = [
   ['memory', '记忆'],
   ['skills', '技能'],
   ['subagent', '子智能体'],
+  ['record', '结果与记录'],
 ];
 
 /* ============================ 访问级别 ============================ */
@@ -65,15 +71,45 @@ function AccessLevels({ value, all, onPick }) {
 
 /* ============================ 工具开关组 ============================ */
 
-function ToolGroup({ gid, title, all }) {
+/* 内置联网搜索的开关：**不是** TOOL_FIELDS 里的参数，而是提示词登记表里那条内置技能
+   （skill.web_search）的启停——它同时管三件事（唯一真源，别在别处再判一次）：
+     · 注册：core/agent-defs.js 的 searchOn()（关掉 = 连 web_search 工具都不给模型）；
+     · 注入：core/prompts.js 的 systemBlocks()（关掉 = 技能正文不进 system）；
+     · 面板：「提示词 → ② 技能 → 联网搜索」那一行的开关（同一个值，两处都是它的视图）。
+   所以这里直接读写登记表（setPromptEnabled），不新增参数、也不复制一份状态。 */
+const SEARCH_FIELD = {
+  label: '内置联网搜索（web_search）',
+  kind: 'switch',
+  tip: '关掉后：不再给模型注册 web_search 工具，联网搜索的技能正文与工具描述也不再注入——'
+    + '模型完全不知道有联网这回事。需要联网时，可以在「提示词 → ② 技能」里自己装一份搜索技能'
+    + '（例如让模型用 run_command 调一个搜索 CLI）。'
+    + '与「提示词 → ② 技能 → 联网搜索」的开关是同一个值，改哪边都一样。',
+};
+
+function SearchBuiltinRow() {
+  const { revision } = useApp();
+  /* Prompts 是 core 层对象：登记表改动只 bump revision，这里按它重算（与 PromptsSection 同一姿势） */
+  const on = useMemo(() => { void revision; return Prompts.enabled('skill.web_search'); }, [revision]);
+  return (
+    <ParamRow
+      field={SEARCH_FIELD}
+      value={on}
+      desc={on ? '关掉即停用联网能力；它的提示词也随之不再注入。' : '已停用：模型不知道有联网这回事。'}
+      onChange={(v) => setPromptEnabled('skill.web_search', v)}
+    />
+  );
+}
+
+function ToolGroup({ gid, title, all, searchOn }) {
   const entries = Object.entries(TOOL_FIELDS).filter(([, f]) => f.group === gid);
   if (!entries.length) return null;
   return (
     <section>
       <SectionTitle>{title}</SectionTitle>
       <div className="overflow-hidden rounded-lg border border-border">
+        {gid === 'search' ? <SearchBuiltinRow /> : null}
         {entries.map(([key, field]) => (
-          <ToolField key={key} fieldKey={key} field={field} value={all[key]} />
+          <ToolField key={key} fieldKey={key} field={field} value={all[key]} searchOff={gid === 'search' && !searchOn} />
         ))}
       </div>
     </section>
@@ -81,12 +117,14 @@ function ToolGroup({ gid, title, all }) {
 }
 
 /** 工具参数一行：控件与说明都走共用的 ParamRow（list 型自动用 chips 渲染） */
-function ToolField({ fieldKey, field, value }) {
+function ToolField({ fieldKey, field, value, searchOff }) {
   const desc = field.customOnly
     ? '只在访问级别为「自定」时生效'
-    : field.kind === 'list'
-      ? '命中的命令不再询问（任何档位都生效），只按「整条命令的前缀」匹配；带管道/串联的整行不豁免。'
-      : null;
+    : searchOff
+      ? '内置联网搜索已关闭：这一项在开启后才生效。'
+      : field.kind === 'list'
+        ? '命中的命令不再询问（任何档位都生效），只按「整条命令的前缀」匹配；带管道/串联的整行不豁免。'
+        : null;
   return <ParamRow field={field} value={value} desc={desc} onChange={(v) => setParam(fieldKey, v, '')} />;
 }
 
@@ -154,15 +192,20 @@ function ServerInfo({ status }) {
     <section>
       <SectionTitle>服务端硬上限与危险清单</SectionTitle>
       <div className="space-y-3 px-4">
-        <NoteBox tone="warn" title="这些是服务端的最后一道闸，界面上改不动">
+        <NoteBox tone="warn" title="这些是服务端的最后一道闸，界面上只能调得更小">
           <ul className="space-y-0.5">
             <li>单次读取上限：{fmtBytes(limits.readBytes)}</li>
             <li>单次写入上限：{fmtBytes(limits.writeBytes)}</li>
-            <li>单次输出上限：{fmtBytes(limits.outputBytes)}</li>
-            <li>目录树节点上限：{limits.treeNodes ?? '-'}</li>
+            <li>单次输出上限（命令输出与所有工具结果）：{fmtBytes(limits.outputBytes)}</li>
+            <li>目录树/找文件节点上限：{limits.treeNodes ?? '-'}</li>
             <li>命令超时硬上限：{limits.timeoutSec ?? '-'} 秒</li>
           </ul>
-          <p className="mt-1.5">界面上填的参数只能比它更小；超出的部分会被服务端夹回。</p>
+          <p className="mt-1.5">
+            上面各组的对应参数（单次读取/写入上限、输出上限、目录树/找文件结果上限、单条命令超时）
+            只能比它更小；超出的会被服务端夹回。要<b>抬高</b>这些硬上限，改服务端环境变量后重启：
+            <span className="font-mono text-[11px]"> AGENT_READ_MAX_BYTES / AGENT_WRITE_MAX_BYTES /
+            AGENT_OUTPUT_MAX_BYTES / AGENT_TREE_MAX_NODES / AGENT_EXEC_MAX_SEC</span>。
+          </p>
         </NoteBox>
 
         <NoteBox tone="danger" title={`危险命令清单（${deny.length} 条）——命中不等于拒绝`}>
@@ -204,14 +247,24 @@ export default function ToolsSection() {
   const status = st.agentStatus;
   const all = resolve(st.settings || {}, '', '');
   const roots = rootsOf(status, st.settings);
+  /* 内置联网搜索的当前状态（真源在提示词登记表；revision 变了就重算，见 SearchBuiltinRow） */
+  const searchOn = useMemo(() => { void st.revision; return Prompts.enabled('skill.web_search'); }, [st.revision]);
 
   return (
     <div className="space-y-4 pb-6">
+      <div className="px-4 pt-3">
+        <NoteBox>
+          这一页只管<b>工具与权限</b>：能不能用（访问级别与各工具开关）、<b>能调用几次</b>
+          （单轮与每个子智能体的次数）、单次能读/写/输出多大（各上限），以及工具能碰哪些目录。
+          模型本身的生成参数（温度、采样、上下文上限…）在「<b>参数</b>」里。
+        </NoteBox>
+      </div>
+
       <SectionTitle>访问级别</SectionTitle>
       <AccessLevels value={val2('agent_access')} all={all} onPick={(v) => setParam('agent_access', v, '')} />
 
       <ToolGroup gid="access" title="命令允许清单" all={all} />
-      {GROUPS.map(([gid, title]) => <ToolGroup key={gid} gid={gid} title={title} all={all} />)}
+      {GROUPS.map(([gid, title]) => <ToolGroup key={gid} gid={gid} title={title} all={all} searchOn={searchOn} />)}
 
       {status ? <ServerPanels status={status} roots={roots} /> : (
         <div className="px-4">

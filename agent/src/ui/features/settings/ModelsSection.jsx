@@ -229,7 +229,7 @@ function AdvancedFields({ d }) {
       <div>
         <Label htmlFor="p-ctx" className="mb-1.5 block text-xs text-muted-foreground">上下文上限（token）</Label>
         <NumberInput id="p-ctx" className="w-full" value={d.ctxLimit} min={512} step={512}
-          onCommit={(v) => d.setCtxLimit(v === '' ? '' : String(v))} placeholder="如 32768" />
+          onCommit={(v) => d.setCtxLimit(v === '' ? '' : String(v))} placeholder="如 1000000（1M）" />
         <FieldDesc>只影响用量环与自动压缩阈值，不发给模型。</FieldDesc>
       </div>
       <div>

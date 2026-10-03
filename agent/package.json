@@ -1,7 +1,7 @@
 {
   "name": "wenming-agent-ui",
   "private": true,
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "智能体 Agent 子项目构建工程（React + Tailwind + shadcn 风格组件；core 层零框架、可 Node 单测）",
   "type": "module",
   "scripts": {

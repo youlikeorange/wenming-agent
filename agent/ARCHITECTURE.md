@@ -201,7 +201,7 @@ finish(run, out, err)
 | `store.js` | 大对象：会话 / 全局记忆 / 提示词表 | index / run-loop / skills / projects(引用) | 按账号一个目录；`putSession(s)` 合并+配额+落盘；`enforceQuota` **增量扣减**（不做 O(n²) 全库序列化）；`updatePrompts` 提供锁内读改写 |
 | `projects.js` | 项目（根目录 + 记忆文件夹） | index / run-loop | 每条记忆一个 `.md` + `MEMORY.md` 索引；`writeMemory` 在账号锁内（内部用 `writeMemoryLocked` 防自锁）；读不动的大文件不在重写时删除 |
 | `archive.js` | 归档区（会话/项目） | index | 搬进 `archive/`，可恢复；`remove` 只接受合法 id（挡路径穿越） |
-| `roots.js` / `osaccess.js` / `deny.js` / `grants.js` | 可访问目录白名单 / POSIX 权限判定 / 危险命令清单 / 一次性授权票据 | tools / index | 只收紧不放宽；票据一次性 |
+| `roots.js` / `osaccess.js` / `deny.js` / `grants.js` | 可访问目录白名单 / POSIX 权限判定 / 危险命令清单 / 一次性授权票据 | tools / index | 只收紧不放宽；票据一次性；清单含**站点自保**（进程/服务/受保护路径，`AGENT_PROTECT` 可追加受保护路径） |
 | `presence.js` | 单窗口占用 | index | 按 `X-Agent-Client` 头判定；被顶掉的窗口不许让模型干活，也不许写数据 |
 | `upstream.js` / `search.js` | 模型代转 / 联网搜索 | index | 出口只允许公网；搜索有并发与每账号频率闸门 |
 | `tools/index.js` + `tools/fs.js` + `tools/exec.js` | 文件与命令工具 | run-bridge / index | 每个工具先过 roots + osaccess + deny；命令走 `spawnSpec`（以绑定身份执行） |
@@ -210,7 +210,7 @@ finish(run, out, err)
 | `run-core.js` | core 装配：静态层共用 + **每段运行一份实例** | run.js / run-loop | `modules()`（动态 import + `installBridge()` + `transport.setTransport`，进程内一次）、`createCoreContext()`（`createPrompts/Memory/AgentDefs/AgentContext/ToolRunner` 现造） |
 | `run-registry.js` | 运行登记表与生命周期 | run.js / run-loop / run-http | `create/get/listOf/objectsOf/stateOf/capacity/stopRun/release`；插话队列 `steer/markSteer/steerPending`；**可同时跑多段**（一条会话一段 + 账号上限 `AGENT_RUNS_PER_ACCOUNT`(3) + 全局上限 `AGENT_RUNS_TOTAL`(8)）；`settled` = 落盘完成（不是 status） |
 | `run-events.js` | 事件日志 + 单运行 SSE + **账号统一事件口** | run-registry / run-loop / run-confirm | `emit`（进日志 + 推本运行的订阅者 + 推账号 hub）、`applyToLive`、`attach`（回放→续播→重发未答确认）、`hubAttach`（快照 + 每段回放 + 续播，事件带 `runId/sessionId/liveId`）、`notifyUi` |
-| `files.js`（服务端 `lib/agent/`） | **待下载目录**（每账号一个）+ 下载链接 + 可执行文件打包 | index（路由）/ tools/deliver | `list/publish/downloadOf/remove`；文件名白名单 + realpath 复核（挡穿越与符号链接）；可执行文件发布时打包、下载时再兜一道；单文件/总量上限 |
+| `files.js`（服务端 `lib/agent/`） | **待下载目录**（每账号一个）+ 下载链接 + 可执行文件打包 | index（路由）/ tools/deliver | `list/publish/downloadOf/remove`；文件名白名单 + realpath 复核（挡穿越与符号链接）；可执行文件**按后缀名判**（不看执行位：NTFS 挂载点上全是 0777）发布时打包、下载时再兜一道；单文件/总量上限 |
 | `tools/deliver.js` | `deliver_file` 工具（把产出物交给用户） | tools/index 的 /call 与 run-bridge | 与 `read_file` **同一套闸门**（roots + 权限 + 解锁）；返回 `files`（内核带进追踪条 → 界面画下载卡片） |
 | `run-subagent.js` | **子智能体**（spawn_agent） | run-loop（注入 ToolRunner） | 自己一段上下文（新 `AgentContext`）+ 默认**只读**工具集（`AgentDefs.subagentToolDefsFor`，永不含 spawn_agent）+ 独立预算；并发闸按 run 排队；过程进事件流（`sub_*`）、结论作为工具结果回主对话、完整转录留在 `run.subs`（`GET /agent/run/subagent`） |
 | `run-confirm.js` | 人工闸门 | run-loop / run.js | `ask`（Map 多槽位、超时按拒绝）、`answerConfirm`（只结算自己的 id） |
@@ -256,7 +256,8 @@ finish(run, out, err)
 | 数据 | 存哪 | 谁写 | 谁读 |
 |---|---|---|---|
 | 会话 / 全局记忆 / 提示词表 | `STATE_DIR/agent/<账号>/*.json` | 服务端 `store.js`（托管运行落盘、界面经 HTTP 写入） | 两端 |
-| 项目记忆 | `STATE_DIR/agent/<账号>/projects/<id>/memory/*.md` + `MEMORY.md` | `projects.writeMemory`（锁内整份重写） | 唯一取数路径 `GET /agent/projects/memory?id=` |
+| 项目记忆 | `STATE_DIR/agent/<账号>/projects/<id>/memory/*.md` + `MEMORY.md` | `projects.writeMemory`（锁内整份重写；**空列表要带对得上的 `baseCount`**，否则 409） | 唯一取数路径 `GET /agent/projects/memory?id=` |
+| 技能（Skill） | `STATE_DIR/agent/<账号>/prompts.json` 的 `skills[]` | `skill_write` / `skill_import`（走确认框；`store.updatePrompts` 锁内） | 注入 system：清单常驻、正文按需 `use_skill` |
 | 配置 / 绑定 / 密钥 | `STATE_DIR/userdata/<账号>/agent.json` | `settings.js` | 服务端（密钥不下发） |
 | 解锁凭据 | 进程内存 vault | `session.bind/unlock` | `actorOf` |
 | 运行（事件/确认/插话） | 进程内存 `run-registry` | `run-loop` | SSE 订阅者 |
@@ -293,3 +294,9 @@ finish(run, out, err)
 16. **子智能体不许递归**（工具集里永不含 spawn_agent）、默认只读（写权限要面板开关 + 工具参数双开）、
    结论必须作为**工具结果**回主对话（过程走事件流，完整转录留在运行里）。
 17. **服务端改动要重启站点才生效**；前端产物重建后刷新即可（`npm run build`）。
+18. **记忆变更按作用域分发**（`Memory.onChange` 的参数是变了的类）：只写那一类，
+    **绝不"一变全写"**——项目记忆是整份覆盖，顺手写一次就可能用陈旧快照把它清空（2026-10-03 事故）。
+19. **项目条目与项目 id 绑定、没取回来过不许写回**（`projectLoaded`）；整份写回带 `baseCount`，
+    服务端拒绝"空列表 + 基准对不上"（409），客户端收到后重新取回。项目记忆取数前先把本地待写落地。
+20. **技能与记忆是两套**：技能记"怎么做"（`prompts.json` 的 `skills[]`，按需注入正文），
+    记忆记"事实"；同一件事只写一处（模型侧口径在 `system.skills_memory` 与两个工具的说明里）。

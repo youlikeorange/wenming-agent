@@ -303,7 +303,10 @@ test('★ 契约：客户端不再读 d.projectMemory（条目一律经 /agent/p
   const fs = readFileSync(new URL('../src/ui/state/session.js', import.meta.url), 'utf8');
   assert.ok(!/projectMemory/.test(fs), 'session.js 里不该再出现 projectMemory：全量 store 已经不带它，留一处读法就会再长出第二条取数路径');
   const st = readFileSync(new URL('../src/core/store.js', import.meta.url), 'utf8');
-  assert.match(st, /queueProjectMemory = \(entries\) => projectWriter\.queue\(\{ id: currentProjectId, entries \}\)/, '写项目记忆时目标 id 必须与条目一起入队（不能在 flush 时读当前项目）');
+  /* 写项目记忆时**目标 id 与条目一起入队**（不能在 flush 时读当前项目）；
+     并带 baseCount（服务端据此做空列表覆盖保护，见 lib/agent/projects.js）。 */
+  assert.match(st, /queueProjectMemory = \(entries, baseCount\) =>\s*projectWriter\.queue\(\{ id: currentProjectId, entries, baseCount/,
+    '写项目记忆时目标 id 与 baseCount 必须与条目一起入队（不能在 flush 时读当前项目）');
 });
 
 test('★ 项目记忆的写请求：目标项目在**入队那一刻**定死（切项目不会把 A 的记忆写进 B）', async () => {

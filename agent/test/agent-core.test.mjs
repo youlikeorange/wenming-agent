@@ -294,3 +294,36 @@ test('场景 L：trace 里的长参数值被截断（写大文件不再把几 MB
   assert.ok(/已截断/.test(t.args.content), '截断处有说明');
   assert.equal(Agent.shrinkArgs({ a: 'y'.repeat(10) }).a.length, 10, '短值不动');
 });
+
+test('场景 M：trace 的结果/参数上限可注入（面板「结果与记录」的 record_trace_chars / record_args_chars）', async () => {
+  const big = 'y'.repeat(9000);
+  /* 自己写流：顺手记下每轮请求发出的消息，用来证明"只截记录、不改发给模型的内容" */
+  const seen = [];
+  let step = 0;
+  const stream = async function* (messages) {
+    seen.push(messages);
+    if (step++ === 0) yield { type: 'tool_calls', calls: [{ id: 't1', name: 'read_file', args: { path: '/tmp/big.txt', note: 'z'.repeat(900) } }] };
+    else yield { type: 'content', text: '读完了' };
+  };
+  const run = (cfg) => {
+    step = 0;
+    return Agent.run({
+      maxRounds: 4, stream, getSteering: () => [],   // cfg.stream 是"返回可迭代对象的函数"（内核会带参调用它）
+      runTool: async () => ({ ok: true, text: big }),
+      ...cfg,
+    });
+  };
+
+  const def = await run({});
+  assert.equal(def.trace[0].result.length, 4000, '默认 4000（与面板默认值一致）');
+  assert.equal(def.trace[0].resultChars, big.length, '★ 真实字数照实记（' + big.length + '）——界面据此显示"4000/9000 字"，而不是无论读多少都显示 4000');
+  assert.ok(def.trace[0].args.note.length < 2050, '参数默认截到 2000 字（实际 ' + def.trace[0].args.note.length + '）');
+
+  const wide = await run({ traceChars: 8000, argsChars: 300 });
+  assert.equal(wide.trace[0].result.length, 8000, '注入 traceChars 后按新上限截');
+  assert.equal(wide.trace[0].resultChars, big.length, '真实字数不受记录上限影响（仍是 ' + big.length + '）');
+  assert.ok(wide.trace[0].args.note.startsWith('z'.repeat(300)), '参数按注入的 argsChars 截');
+  assert.ok(wide.trace[0].args.note.length < 360, '截断后有说明（实际 ' + wide.trace[0].args.note.length + '）');
+  const toolMsg = seen[1].find((m) => m.role === 'tool');
+  assert.equal(toolMsg.content.length, big.length, '★ 发给模型的工具结果一个字不少（上限只管记录）');
+});

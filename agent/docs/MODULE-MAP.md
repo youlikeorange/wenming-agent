@@ -35,7 +35,7 @@
 
 | 目录 | 说明 |
 |---|---|
-| `agent/src/core/` | 零框架业务逻辑，可在 Node 下直接单测（`test/` 里 198 个用例大多在测它） |
+| `agent/src/core/` | 零框架业务逻辑，可在 Node 下直接单测（`test/` 里 206 个用例大多在测它） |
 | `agent/src/ui/` | React 界面：`features/`（组件）、`state/`（状态容器 + 动作层）、`components/ui/`（shadcn 风基础件） |
 | `agent/src/ui/state/` | `store.js` 状态容器 · `host.js` 依赖注入宿主 · `session.js` 一轮对话编排 · `run.js` 托管运行客户端 · `settings.js` 设置类动作 · `projects.js` 项目动作 · `downloads.js` 待下载 |
 | `lib/agent/` | 服务端（站点根）：路由 `index.js`、存储 `store.js`、配置 `settings.js`、托管运行 `run*.js`、工具 `tools/` |
@@ -74,8 +74,11 @@
 
 公共规则（`lib/agent/index.js`）：
 - 除 `GET /agent/info` 与 `POST /agent/presence` 外**全部要求文档站登录**（`index.js:331-352`）；
-- 登录后除 info/presence 外全过**单窗口互斥** `presence.guard`（`index.js:354`：按「账号+IP」占用，
-  被顶窗口所有需登录端点回 409 + `X-Agent-Client-Lock: taken`；服务端**已在跑的 run 不受顶号影响**）；
+- 登录后除 info/presence 外全过**单窗口互斥** `presence.guard`（`index.js:354`：**已登录按账号全局**占用
+  （`presence.js:44` 的 `keyOf`，key = `a:<账号>`；未登录才按来源地址 `anon:<ip>`），
+  被顶窗口所有需登录端点回 409 + `X-Agent-Client-Lock: taken`；服务端**已在跑的 run 不受顶号影响**；
+  不带 `X-Agent-Client` 头的无头请求（curl/脚本）与"从未 claim 的陌生 cid"一律放行——
+  互斥是"参与后再拦"，不是准入；
 - 请求体上限真源在 `lib/agent/store.js:38` 的 `MAX_BODY_BYTES`（store/projects/run 链路）与
   `SMALL_BODY_BYTES = 4MB`（其余）；**新增端点必须走 `store.readAgentJson` 或 `run-http.js` 的口径**，别再写第四个数字。
 
@@ -98,19 +101,19 @@
 | GET | `/agent/projects/browse` | 列子目录（只能在"起点"内向下） | `?path=` | `{path,parent,start,entries[],atStart}` | `projects.js:416-441` |
 | GET | `/agent/projects/memory` | 读某项目记忆（**唯一取数路径**） | `?id=` | `{ok,id,entries[]}` | `index.js:224-228` |
 | POST | `/agent/projects/create` | 建项目 + 记忆文件夹 + 种子记忆 | `{root,name}` | `{ok,project,current,entries}` | `projects.js:317-353` |
-| POST | `/agent/projects/rename` / `current` / `delete` / `archive` / `memory` | 改名 / 设当前 / 删 / 归档（连会话）/ 项目记忆整体覆盖 | `{id,…}` | `{ok,…}` | `index.js:240-258` |
+| POST | `/agent/projects/rename` / `current` / `delete` / `archive` / `memory` | 改名 / 设当前 / 删 / 归档（连会话）/ 项目记忆整体覆盖 | `{id,…}`；memory 另带 `baseCount`（取回时的条数） | `{ok,…}`；空列表 + 基准对不上 → **409 `{conflict:true,entries}`** | `index.js:240-278` · `projects.js:226-260` |
 | GET | `/agent/archive` | 归档清单 | — | `{sessions[],projects[]}` | `archive.js:221-231` |
 | POST | `/agent/archive/restore` / `delete` | 恢复 / 彻底删除 | `{kind,id}` | `{ok,…}` | `archive.js:183-231` |
 | POST | `/agent/upstream/chat` | 模型代转（流式；密钥只存服务端） | `{provider?,type?,baseUrl?,apiKey?,body,sessionId?}` | 上游原始流（头 `X-Agent-Proxy: upstream`） | `upstream.js:188-248` |
 | POST | `/agent/upstream/models` | 拉模型清单 | `{provider\|type,baseUrl,apiKey}` | 上游 JSON 透传 | `upstream.js:203-226` |
-| POST | `/agent/search` | 联网搜索（内置技能用） | `{query,max_results 1-10}` | `{ok,markdown}` / `{ok:false,error}` | `search.js:26-77` |
+| POST | `/agent/search` | 联网搜索（内置技能用；**默认匿名不带 Key**，`ANYSEARCH_API_KEY` 才带） | `{query,max_results 1-10}` | `{ok,markdown}` / `{ok:false,error}` | `search.js:45-69` |
 | POST | `/agent/skills/import` | 从 SKILL.md 装技能（`dryRun` 预览） | `{path,auto?,dryRun?}` | `{items[{name,description,auto,file,chars}]}` | `index.js:299-323` · `skills.js:177-205` |
-| GET | `/agent/files` | 待下载目录列表 | — | `{dir,entries[{name,size,exec,packaged,downloadName}]}` | `files.js:96-123` |
-| GET | `/agent/files/download` | 下载（可执行自动改发 zip） | `?name=` | 文件字节（头 `X-Agent-Packaged`） | `files.js:239-260` |
-| POST | `/agent/files/delete` | 删除待下载文件 | `{name}` | `{ok}` | `files.js:267-274` |
+| GET | `/agent/files` | 待下载目录列表 | — | `{dir,entries[{name,size,exec,packaged,downloadName}]}` | `files.js:108-133` |
+| GET | `/agent/files/download` | 下载（可执行后缀自动改发 zip） | `?name=` | 文件字节（头 `X-Agent-Packaged`） | `files.js:251-272` |
+| POST | `/agent/files/delete` | 删除待下载文件 | `{name}` | `{ok}` | `files.js:279-286` |
 | GET | `/agent/tools/status` | 身份/白名单/上限/危险清单/工具表 | — | `{binding,roots,start,limits,deny[],tools[]}` | `tools/index.js:47-76` |
 | POST | `/agent/tools/roots` | 可访问目录 / 项目起点 | `{action:'add'\|'remove'\|'set'\|'reset'\|'start',…}` | `{ok,roots[]}` / `{ok,start}` | `tools/index.js:78-92` |
-| POST | `/agent/tools/deny-check` | 危险命令预检 | `{command}` | `{ok,hit,grant}` | `tools/index.js:94-104` |
+| POST | `/agent/tools/deny-check` | 危险命令预检（内置清单含**站点自保**：kill/pkill/killall、loginctl 会话、systemctl 破坏性子命令、受保护路径上的删除/移动/截断/重定向；受保护范围见 `lib/agent/deny.js` 的 `SELF_PROTECT`，可用 `AGENT_PROTECT` 追加） | `{command}` | `{ok,hit,grant}` | `tools/index.js:94-104` |
 | POST | `/agent/tools/call` | 执行工具（**唯一工具出口**） | `{name,args,limits,grant}` | `{ok,text,note,ms,files?}`；失败带 `needBind/needUnlock/needGrant/needPermission/hit` | `tools/index.js:106-145` |
 | POST | `/agent/run/start` | 起一段托管运行（立即返回） | `{sessionId,text,providerId?,history?,localEdits?}` | `{ok,runId}`；忙时 409 + `busy[]` | `run-http.js:65-82` · `run.js:75-125` |
 | GET | `/agent/run/hub` | **前端唯一 SSE 口**：本账号全部运行事件 | — | SSE：`hub_snapshot`、带 `runId/sessionId` 的事件、`confirm` | `run-events.js:41-70` |
@@ -140,7 +143,7 @@ STATE_DIR/
     │   ├── project.json                 # 项目元信息
     │   ├── MEMORY.md                    # 记忆索引（Markdown 链接列表）
     │   └── memory/*.md                  # 每条记忆一个 Markdown（YAML frontmatter + 正文）
-    ├── downloads/                       # 待下载目录（可执行文件落成 <名>.zip）
+    ├── downloads/                       # 待下载目录（可执行后缀的文件落成 <名>.zip；判据只看后缀名）
     └── archive/
         ├── sessions.json                # 归档会话（原样 + archivedAt）
         ├── projects.json                # 归档项目元信息（+ archivedAt/memoryCount/sessions）
@@ -198,6 +201,10 @@ STATE_DIR/
 **要点**：
 - 登记表**任何**写入口都会 `notify` → 宿主统一落盘；**不存在"在调用方再手动保存一次"的正路**
   （审计删掉了冗余的 `syncPrompts`，`host.js:222-224` 有注释）。
+- **技能与记忆是两套（2026-10-03 写死口径）**：技能（`skills[]`）记"怎么做"（步骤/流程/清单，正文按需注入），
+  记忆（`memory.json` / 项目记忆 .md / 会话记忆）记"事实"；**同一件事只写一处**。模型侧的口径在
+  `system.skills_memory`（四类数据的边界）+ `tool.memory_write.desc` + `tool.skill_write.desc`；
+  `memory_write` 结果里还有一句"这段更像做法"的软提示（`core/tool-runner.js` 的 `looksLikeHowTo`，只提示不拦）。
 - 开关（`Switch`）是**立刻生效**的（`setPromptEnabled` / `updateSkill({enabled})`），不走草稿；
   名称/用途/加载方式/正文都走「草稿 → 应用」。
 - `dirty` 判定是**逐字段比较**（`draftView`，`PromptsSection.jsx:110`）——草稿改回原样不算"未应用"。
@@ -251,7 +258,23 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 **必须落盘的字段**（删了会坏功能）：`error`（错误块/重试）、`thinkingSig`/`redactedThinking`（Anthropic 回传）、
 `trace[].files`（下载卡片）、`session.memory`、`session.compaction`。
 
-### 6.2 记忆（三类）
+**会话里没有 tool 消息（2026-10-02 实测确认的契约）**：落盘的会话只有 `user` 与 `assistant`（正文 + `trace`）。
+工具调用/结果只活在**一条运行的内存上下文**里——同轮内模型一定看得到工具输出（且与 `tool_calls` 的 id 配对），
+**跨轮不带进请求**：下一轮模型看到的是"用户原话 + 自己上一轮的正文（通常已含结论）"，需要原文会再读一次
+（读类工具不受"重复调用保护"拦，正是为这条留的路）。`trace` 里的工具结果**只给界面**，不进模型。
+`sanitizeMsg` 允许 `role:'tool'` / `toolCalls` 只是"存得下"（给旧数据兜底），当前没有任何写入方。
+**要改成"工具输出跨轮"的话**：得成对持久化 assistant(toolCalls)+tool、给 `Assemble.toApiMsg` 补上
+`toolCallId`（它现在丢这个字段——真存进历史就会把上游打成 400 missing tool_call_id）、
+并让压缩/裁剪懂配对（现有 `collapseToolHistory` 只是被拒后的补救）。回归用例：
+`test/agent-server-test.js` 的「多轮上下文」★★。
+
+### 6.2 记忆（三类）与技能（两套东西）
+
+**边界（2026-10-03 写死）**：技能记"怎么做"（可复用的步骤/流程，存 `prompts.json` 的 `skills[]`，
+正文按需注入）；记忆记"事实"（偏好、结论、项目在哪、踩坑）。**同一件事只写一处**——
+写进技能就不要再往记忆里抄一份（技能清单与正文会按需注入，记忆不是它的备份）。
+模型侧口径在登记表 `system.skills_memory` + `tool.memory_write.desc` + `tool.skill_write.desc`；
+`memory_write` 的结果里还有一句"这段更像做法"的软提示（`tool-runner.js` 的 `looksLikeHowTo`，只提示不拦）。
 
 | 类 | 位置 | 注入方式 |
 |---|---|---|
@@ -259,9 +282,23 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 | 项目 | `projects/<id>/memory/*.md` + `MEMORY.md` 索引 | 只注入索引；**真源是 Markdown 文件** |
 | 会话 | 该会话对象的 `memory[]` | 正文整段注入（通常很短） |
 
-写入通道：前端 `host.js:334-341`（`Memory.onChange` → `queueMemory`/`queueProjectMemory` + `persistSession`）；
-服务端托管运行 `run-loop.js:84-85`。项目记忆的取数**只有** `GET /agent/projects/memory?id=` 一条路，
-`GET /agent/store` **不带**项目记忆（2026-10-01 归口）。
+**写入通道（2026-10-03 起按作用域分发）**：`Memory.onChange(fn)` 的回调参数是**变了的类**
+（`['global'|'project'|'session']`），订阅方只写那一类：前端 `host.js` 的 `Memory.onChange`
+（global→`queueMemory`、project→`queueProjectMemory`、session→`persistSession`）；服务端托管运行
+`run-loop.js` 的同名钩子（global→`store.putMemory`、project→`projects.writeMemory`）。
+旧实现是"一变全写"（任何一次变更都整份写回三类）——**项目记忆因此被陈旧快照覆盖清空过**
+（抖音热点项目，2026-10-03）。
+
+**项目记忆的三道写回纪律**（`core/memory.js` 的 `projectListFor` / `projectLoaded` / `projectBaseCount`）：
+- 条目与项目 id 绑定：`setProject(meta)` 换了项目又不给条目 → 条目清空并标记"还没取回来"，
+  **绝不沿用上一个项目的条目**（那会被写进新项目的文件夹）；
+- `projectLoaded=false`（没取回来过）→ 订阅方**不许**整份写回；
+- 写回带 `baseCount`（取回时服务端有几条）→ 服务端 `writeMemoryLocked` 用它做**空列表覆盖保护**：
+  空列表且基准对不上 → **409 + conflict + 现状**，客户端收到 `memoryConflict` 事件后重新取回（自愈）。
+
+项目记忆的取数**只有** `GET /agent/projects/memory?id=` 一条路，`GET /agent/store` **不带**项目记忆
+（2026-10-01 归口）。取数前先把本地待写落地（`Store.flushProjectMemory`）——旧实现"有待写就跳过取数"，
+陈旧空快照必然赢，是清空事故的直接成因。
 
 ### 6.3 项目
 
@@ -284,18 +321,20 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 | 加一个**工具** | 设置里给开关？ | `core/agent-defs.js`（定义与注册闸门）+ `core/tool-runner.js`（执行） | `lib/agent/tools/index.js` 分发表 + `tools/*.js` | 三处都要改：定义、执行、服务端实现；权限走 `roots + osaccess + limits` |
 | 加一个**端点** | `core/endpoints.js` 的 `EP` + 调用处 | — | `lib/agent/index.js` 路由 + 模块实现 | 请求体上限走 `store.readAgentJson`；登录/presence 已被总入口统一处理 |
 | 加一个**设置项** | 设置分区组件 + `ui/state/settings.js` 动作 | `core/params.js`（如果是生成参数） | 若是 provider 字段：`settingsForSave()`（`host.js:133`）**白名单** + `sanitize.js` | 前端白名单漏了 = "界面改了存不下来"（踩过：`sessionHeader`） |
+| 调**内设上限**（追踪条字数、压缩输入、写入/目录树条数……） | — | `core/params.js` 的 `TOOL_FIELDS` 加一条（组 `record` / `subagent` / `fs`） | 服务端硬上限在 `lib/agent/limits.js` 的 `LIMITS`（环境变量可抬） | **默认值只在 schema 写一次**；每处消费都必须 `val2('<key>')`（`params.test.mjs` 会扫源码核键名）；追踪条上限的五个消费点见 §10 |
 | 改**会话/消息结构** | `ui/state/session.js`、`Message.jsx` | `core/sessions.js`、`core/assemble.js` | `store.js` 的 `sanitizeSession/sanitizeMsg`（白名单） | 新字段要在 sanitize 里放行，否则落盘即丢 |
 | 改**技能编辑 UI** | `PromptsSection.jsx`（② 组） | — | — | 只有这一处编辑器；写入口用 `updateSkill`（技能）或 `set`（覆盖） |
 | 改**提示词保存链路** | `ui/state/host.js`（Prompts.onChange） | `core/prompts.js`（notify/serialize） | `index.js` store 路由 + `store.putPrompts` + `sanitize.prompts` | 托管运行那条订阅（`run-loop.js:83`）要跟着改，且**必须退订** |
 | 改**用量/压缩** | `ContextMeter.jsx`、`ui/state/settings.js` 的 `compactNow/uncompact` | `core/context.js` | — | 压缩提示词在登记表 `compact.*` |
 | 改**侧栏/分组** | `Sidebar.jsx`、`ui/state/session.js` | `core/sessions.js` 的 `titleFrom` | — | 会话分组是纯客户端（`settings.ui`） |
+| 改**会话大纲**（按提问跳转的导航） | `SessionOutline.jsx`（桌面导轨 / 手机浮标 + 底部列表）、`components/ui/sheet.jsx`（`side="bottom"`） | — | — | 两种布局**共用** `buildItems` / `useCurrent` / `jumpTo`，只换外壳；真机回归 `../test/outline-ui-check.mjs`（桌面）+ `../test/outline-phone-ui-check.mjs`（手机视口） |
 
 构建与交付：
 
 ```bash
 cd agent
 npm run build     # 改了 src/** 必做（产物 public/llm-chat/vendor/agent.js）
-npm test          # node --test，198 个用例
+npm test          # node --test，206 个用例
 npm run lint && npm run lint:budget   # warning 是棘轮：只减不增（当前 79）
 npm run dup && npm run cycles         # 重复块 / 模块环
 npm run check     # 上述一起跑
@@ -305,26 +344,31 @@ npm run check     # 上述一起跑
 ---
 
 ## 8. 已确认的坑（每条都是真踩过的）
-
 1. **`prompts.json` 磁盘上没有 `version`**：`readPrompts` 只在**返回对象**上补 `version:1`
    （`store.js:298-304`），写盘走 `sanitize.prompts` 的 `{overrides,skills,extra}`。
    写"按 version 迁移"的代码永远不会触发。
 2. **项目记忆是全量覆盖**：`projects.writeMemoryLocked` 会删掉不在本次 entries 里的 `.md`
-   （`projects.js:253-272`）。所以客户端有三道守卫：不给 entries 就别灌（`host.js:105-111`）、
-   没有当前项目不发（`core/store.js:224-227`）、建项目要拿服务端真实种子（`ui/state/projects.js`）。
-   **空数组 = 清空该项目记忆**。
+   （`projects.js:253-272`）。所以有四道守卫（2026-10-03 补齐后）：
+   ① 条目与项目 id 绑定、没取回来过不许写回（`core/memory.js` 的 `projectLoaded`）；
+   ② 没有当前项目不发（`core/store.js` 的 projectWriter）；
+   ③ 建项目要拿服务端真实种子（`ui/state/projects.js`）；
+   ④ **服务端兜底**：空列表 + `baseCount` 与服务端现有条数对不上 → 409 conflict（客户端重新取回）。
+   **空数组 = 清空该项目记忆**（合法清空要带对得上的 baseCount）。
 3. **项目记忆不在 `GET /agent/store` 里**（`index.js:106-119` 明确归口），只有
    `GET /agent/projects/memory?id=` 一条取数路径。
 4. **请求体上限有五个入口**，加新端点选错就会 413 或形同虚设：
    `index.js:67-80`（主路由）、`store.readAgentJson`（`store.js:46-50`）、`run-http.js:19`、
-   `files.js:264`（64KB）、`search.js:49-77`（手工收流 64KB）。真源常量在 `store.js:38-40`。
-5. **单窗口互斥是"账号+IP"**，不是账号全局（`presence.js:44`）；同一账号两台设备可同时活跃。
-   被顶窗口所有需登录端点都 409，但**服务端在跑的 run 不受影响**（只有登出/解绑才 abort）。
+   `files.js:264`（64KB）、`search.js:70-98`（手工收流 64KB）。真源常量在 `store.js:38-40`。
+5. **单窗口互斥是"已登录按账号全局"**（`presence.js:44` 的 `keyOf`，key = `a:<账号>`），
+   **不是"账号+IP"**：同一账号在任何设备/浏览器上共享一个占用位，第二台会把第一台顶掉。
+   被顶窗口所有需登录端点都 409（在途 SSE 由服务端掐断），但**服务端在跑的 run 不受影响**
+   （只有登出/解绑才 abort）。无头请求（无 `X-Agent-Client`）与从未 claim 的 cid 一律放行。
 6. **前端配置保存有白名单**：`settingsForSave()`（`host.js:133-149`）没列出的字段服务端收不到。
 7. **`settings.js`（服务端）读路径会补 TOFU 锚点 `keyHost`**，保存时比对；改 baseUrl 不带密钥会 400。
    直接改 `agent.json` 绕不过（读路径也会钉锚点）。
-8. **`Memory.load` 内容没变不发 `onChange`**（`core/memory.js:99-105`）：别为了"加载后自动保存"
+8. **`Memory.load` 只碰全局与会话、且内容没变不发 `onChange`**（`core/memory.js`）：别为了"加载后自动保存"
    改成无条件 emit —— 会触发 `persistSession` 把刚加载的空会话写回去（历史事故）。
+   项目条目**不经 `load()`**：它只有 `setProject(meta, entries)` 一条来路（条目与项目 id 必须一起给）。
 9. **托管运行的两条订阅必须退订**（`run-loop.js:206-208`）：`Prompts.onChange`/`Memory.onChange`
    捕获了注册那一刻的账号，不退订会造成**跨账号覆盖写**（2026-10-01 实测复现的 P0）。
 10. **`run` 的并发**：一个会话一段、账号 3 段、进程 8 段（`run-registry.js:8-21`）；
@@ -338,7 +382,7 @@ npm run check     # 上述一起跑
 
 ## 9. 验证姿势（本项目的"实测"标准）
 
-1. **core/服务端逻辑**：`cd agent && npm test`（198 用例）。新增行为补一条用例，跑得快、能定位。
+1. **core/服务端逻辑**：`cd agent && npm test`（206 用例）。新增行为补一条用例，跑得快、能定位。
 2. **界面改动**：`npm run build` 后在真实浏览器里走一遍（内置浏览器 / 真实 Chrome + CDP 都行）。
    本项目的历史教训是"测试全绿而真机坏"（桩与生产注入不同），所以**界面改动必须真机点一遍**。
 3. **落盘类改动**：改完去 `~/.local/share/wenming-web/agent/<账号>/{prompts.json,sessions.json,...}`
@@ -346,4 +390,52 @@ npm run check     # 上述一起跑
 4. **内置浏览器的已知坑**（验证时的操作要点）：`locator.click()` 不一定投递事件 → 用
    `evaluate` 里的 `element.click()`；Radix 弹层退场动画会卡住（`data-scroll-locked`/`pointer-events:none`
    残留）→ 刷新页面重来，**不要手删 React 拥有的节点**（会整树卸载）；截图可能过期 → 以 DOM 读值为准。
-5. **提交前**：`npm run check`（lint + 预算 + 重复块 + 模块环 + 测试）。
+   IAB 还不派发 resize / MediaQuery change（宽窗口会被判成手机版）→ **手机视图只能拿真实 Chrome + CDP 验**。
+5. **真实 Chrome + CDP 的 UI 检查**（仓库根 `test/*-ui-check.mjs`）两条硬要求：
+   - **要看悬停就必须带 `--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`**：
+     无头 Chrome 自报触屏（hover:none），Tailwind 的 `hover:` 整段失效；而 `Emulation.setEmulatedMedia`
+     自 **Chrome 153 起已静默失效**（不报错、matchMedia 照旧 hover:none）。手机视图的检查反而**不要**加它。
+   - **脚本收尾必须 `Page.navigate about:blank`**：presence 每 5 秒心跳续期，留着一个开着页面的窗口，
+     下一个跑检查的窗口会被它顶掉——`z-[120]` 冻结层吞掉全部鼠标/触摸事件（症状像"功能整个坏了"）。
+6. **提交前**：`npm run check`（lint + 预算 + 重复块 + 模块环 + 测试）。
+
+---
+
+## 10. 内设参数与上限（谁在哪儿调）
+
+**原则（2026-10-02 起）**：凡是"用户可能撞上"的内设数字，默认值只在 `core/params.js` 的
+`TOOL_FIELDS` 写一次，面板「设置 → 权限与工具」里可调，消费处一律 `val2('<key>')`。
+散落的魔数（曾经七个地方各写一个 4000）视为缺陷。
+
+**两页的边界（2026-10-03 定）**：`FIELDS`（模型生成参数）→ 只画在「参数」页，可每模型覆盖；
+`TOOL_FIELDS`（工具与权限：能不能用 / 能调用几次 / 单次上限）→ 只画在「权限与工具」页。
+两页曾各画一份工具参数（同键两处可改）——已去重，`ParamsSection.jsx` 不许再引用 `TOOL_FIELDS`
+（`agent/test/params.test.mjs` 有源码级守门）。**内置联网搜索**的开关在
+「权限与工具 → 联网搜索」，它读写的不是参数，而是提示词登记表里 `skill.web_search` 那条内置技能的
+启停（唯一真源）：关掉 = 不注册 `web_search` 工具（`agent-defs.js` 的 `searchOn()`）+ 技能正文与
+工具描述都不注入（`prompts.js` 的 `systemBlocks()`）；需要联网时用户可自己装一份搜索技能。
+回归：仓库根 `test/settings-menu-ui-check.mjs`（真实 Chrome + CDP）。
+
+| 参数（面板分组） | 默认 | 消费点（改了一处不能漏另一处） | 服务端硬上限 |
+|---|---|---|---|
+| `record_trace_chars`（结果与记录）· 追踪条单条结果 | 4000 | `core/agent.js` trace.push · `ui/state/host.js` fillTraceStrip · `lib/agent/run-loop.js` loopHooks · `run-subagent.js`（转录 + sub_end）· `lib/agent/run.js` subAgentOf | 单条记录 200k 字（`sanitize.MAX_LONG`） |
+| `record_args_chars`（结果与记录）· 追踪条单条参数 | 2000 | 同上五处（都走 `Agent.shrinkArgs(args, cap)`） | 同上 |
+| `record_compact_chars`（结果与记录）· 压缩输入单条 | 4000 | `core/context.js` summarize（经注入的 `val2`） | — |
+| `subagent_steps`（子智能体）· 转录保留几步 | 200 | `run-subagent.js` 的 `transcript.steps` | 内存（run.subs，结束保留 10 分钟） |
+| `plugin_fs_read_kb` / `plugin_fs_write_kb` / `plugin_exec_out_kb` / `plugin_fs_nodes` / `plugin_exec_timeout` | 64KB / 4MB / 16KB / 800 / 60s | 客户端 `tool-runner.js` 的 `pluginLimits()` → 服务端 `limits.js` 的 `effLimits()`（**只能收紧**） | `LIMITS`（环境变量 `AGENT_READ_MAX_BYTES` / `AGENT_WRITE_MAX_BYTES` / `AGENT_OUTPUT_MAX_BYTES` / `AGENT_TREE_MAX_NODES` / `AGENT_EXEC_MAX_SEC`；面板上写明。**本站 `up.sh` 已把输出硬顶设为 512KB**——抬硬顶 ≠ 自动生效，面板值仍要自己调） |
+| `ctxLimit`（上下文与扩展）· 用量环分母 | 1000000 | `core/params.js` 的 `FIELDS.ctxLimit` → `ctxLimitOf()`（参数 > 服务商 > 出厂默认）；`ui/state/store.js` 与 `ContextMeter.jsx` 的初始占位直接读 schema | `sanitize.js` 把服务商级 ctxLimit 夹到 2^24；**只影响用量环与自动压缩阈值，不发给模型** |
+| 子智能体预算四项 + 并发/轮次 | 2/4/10/4 · 2/6 | `run-subagent.js` 的 `subBudget` / `clampInt` | 并发 8 / 轮次 30（`clampInt` 上限，schema 里已写 max） |
+
+刻意**不**开放的（数据保留类，改了等于给自己制造数据丢失/内存风险）：会话 ≤300、消息 ≤2000/会话、
+会话 ≤32MB、trace ≤100 条/消息、记忆 ≤300 条（`lib/agent/store.js`）、归档 ≤500/100（`archive.js`）、
+待下载 500 项 / 512MB / 2GB（`files.js`）。要动它们请改代码并同步改这一节。
+
+**注意**：`plugin_exec_out_kb`（输出上限）不只管命令输出——`tools/index.js` 用它截**所有工具结果**，
+读大文件时文件内容先被它截一次（默认 16KB），再被 `record_trace_chars` 截一次（默认 4000 字）。
+用户抱怨"读到的内容不全"时两个都要看。
+
+**追踪条如实报字数**：每条 trace 条目除 `result`（被记录上限截过的正文）还带 `resultChars`
+（**截断前的真实字数**，模型实际收到的量）。三个产生点（`core/agent.js` 的 trace.push、
+`run-loop.js` 的 loopHooks、`host.js` 的 fillTraceStrip）都要写它，`store.js` 的 sanitizeMsg 白名单
+要放行（否则刷新即丢）；界面据此显示「显示了/共 字」+ 截断说明（`TraceStrip.jsx` 的 `charsOf`）。
+只加 `result` 不加 `resultChars` 的后果：无论文件读进来多少，界面一律显示"4000 字"。

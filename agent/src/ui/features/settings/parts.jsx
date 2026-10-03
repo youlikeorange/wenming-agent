@@ -107,8 +107,10 @@ export function ChoiceGroup({ options, value, onChange, className }) {
 
 const textOf = (v) => (v === undefined || v === null ? '' : String(v));
 
-/** 数字输入：草稿态只在本组件里，提交时夹回 min/max */
-export function NumberInput({ value, onCommit, min, max, step = 1, className, placeholder }) {
+/** 数字输入：草稿态只在本组件里，提交时夹回 min/max。
+ *  `unit`（schema 里的量纲：KB / 秒 / 项 / 字）摆在输入框右边——schema 里一直写着它，
+ *  界面从来不渲染，用户只看到光秃秃一个数字（"64 是什么量？"）。 */
+export function NumberInput({ value, onCommit, min, max, step = 1, unit, className, placeholder }) {
   const [draft, setDraft] = useState(null);
   const commit = () => {
     if (draft === null) return;
@@ -122,19 +124,22 @@ export function NumberInput({ value, onCommit, min, max, step = 1, className, pl
     onCommit(Math.max(lo, Math.min(hi, n)));
   };
   return (
-    <ImeInput
-      type="number"
-      inputMode="decimal"
-      value={draft ?? textOf(value)}
-      min={min}
-      max={max}
-      step={step}
-      placeholder={placeholder}
-      onChange={(e) => setDraft(e.target.value)}
-      onBlur={commit}
-      onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
-      className={cn('w-24 text-right font-mono tabular-nums', className)}
-    />
+    <span className={cn('inline-flex items-center gap-1', className)}>
+      <ImeInput
+        type="number"
+        inputMode="decimal"
+        value={draft ?? textOf(value)}
+        min={min}
+        max={max}
+        step={step}
+        placeholder={placeholder}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); e.currentTarget.blur(); } }}
+        className={cn('w-24 text-right font-mono tabular-nums', !unit && className)}
+      />
+      {unit ? <span className="text-[11px] text-subtle">{unit}</span> : null}
+    </span>
   );
 }
 
@@ -236,7 +241,7 @@ function ParamControl({ field, value, onChange }) {
   const commit = (v) => onChange(normalizeValue(field, v));
   if (field.kind === 'range') return <RangeControl field={field} value={value} onChange={onChange} />;
   if (field.kind === 'number') {
-    return <NumberInput value={value} min={field.min} max={field.max} step={field.step} onCommit={commit} />;
+    return <NumberInput value={value} min={field.min} max={field.max} step={field.step} unit={field.unit} onCommit={commit} />;
   }
   if (field.kind === 'select') return <SelectControl field={field} value={value} onChange={onChange} />;
   if (field.kind === 'switch') return <Switch checked={!!value} onCheckedChange={commit} />;

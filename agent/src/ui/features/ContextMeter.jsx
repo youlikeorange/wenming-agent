@@ -1,6 +1,7 @@
 // ContextMeter.jsx —— 上下文用量环：conic-gradient 百分比 + 已用/上限 + 细进度条，点开看明细与压缩操作
 import { useEffect, useRef, useState } from 'react';
 import { AgentContext } from '../../core/context.js';
+import { FIELDS } from '../../core/params.js';   // 兜底分母 = schema 的 ctxLimit 默认（唯一真源）
 import { compactNow, uncompact } from '../state/settings.js';
 import { Button } from '../components/ui/button.jsx';
 import { cn } from '../lib/utils.js';
@@ -24,7 +25,7 @@ export default function ContextMeter() {
   const [open, setOpen] = useState(false);
   const boxRef = useRef(null);
 
-  const ctx = st.ctx || { used: 0, limit: 32768, pct: 0, state: 'ok', sysTok: 0, histTok: 0 };
+  const ctx = st.ctx || { used: 0, limit: FIELDS.ctxLimit.def, pct: 0, state: 'ok', sysTok: 0, histTok: 0 };
   const pct = Math.max(0, Math.min(100, Math.round(ctx.pct || 0)));
   const color = RING_COLOR[ctx.state] || RING_COLOR.ok;
 

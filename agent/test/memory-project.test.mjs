@@ -24,7 +24,7 @@ const fakePrompts = {
 const PROJECT = { id: 'htmlweb-ab12cd34', name: '文档站', root: '/w/htmlweb', memoryDir: '/s/agent/admin/projects/htmlweb-ab12cd34/memory' };
 const reset = () => {
   Memory.init({ Prompts: fakePrompts });
-  Memory.load([], [], []);
+  Memory.load([], []);   // 项目条目不经 load（只有 setProject(meta, entries) 一条来路）
   Memory.setProject(null);
 };
 

@@ -214,6 +214,8 @@ html[data-fontscale="1.2"] { font-size: 17px; }
 @keyframes ui-slide-out-right { to { transform: translateX(100%); } }
 @keyframes ui-slide-in-left { from { transform: translateX(-100%); } }
 @keyframes ui-slide-out-left { to { transform: translateX(-100%); } }
+@keyframes ui-slide-in-up { from { transform: translateY(100%); } }
+@keyframes ui-slide-out-up { to { transform: translateY(100%); } }
 @keyframes ui-collapse-open { from { height: 0; } to { height: var(--radix-collapsible-content-height); } }
 @keyframes ui-collapse-close { from { height: var(--radix-collapsible-content-height); } to { height: 0; } }
 
@@ -225,11 +227,13 @@ html[data-fontscale="1.2"] { font-size: 17px; }
 .ui-anim-slide-right[data-state="closed"] { animation: ui-slide-out-right 0.18s ease-in; }
 .ui-anim-slide-left[data-state="open"] { animation: ui-slide-in-left 0.22s cubic-bezier(0.22, 1, 0.36, 1); }
 .ui-anim-slide-left[data-state="closed"] { animation: ui-slide-out-left 0.18s ease-in; }
+.ui-anim-slide-up[data-state="open"] { animation: ui-slide-in-up 0.22s cubic-bezier(0.22, 1, 0.36, 1); }
+.ui-anim-slide-up[data-state="closed"] { animation: ui-slide-out-up 0.18s ease-in; }
 .ui-collapse[data-state="open"] { animation: ui-collapse-open 0.2s ease-out; }
 .ui-collapse[data-state="closed"] { animation: ui-collapse-close 0.2s ease-in; }
 
 @media (prefers-reduced-motion: reduce) {
-  .ui-anim-fade, .ui-anim-pop, .ui-anim-slide-right, .ui-anim-slide-left, .ui-collapse { animation: none !important; }
+  .ui-anim-fade, .ui-anim-pop, .ui-anim-slide-right, .ui-anim-slide-left, .ui-anim-slide-up, .ui-collapse { animation: none !important; }
 }
 
 /* ============================ 聊天区补充（React 侧） ============================ */

@@ -10,7 +10,7 @@
  *  纯宿主依赖全部走 init 注入，实例自身不持有其它全局状态：
  *  init({ Prompts, Providers, Agent, activeProvider, buildOptions, history, curSess,
  *         persistSession, addTraceStrip, fillTraceStrip, toast,
- *         getInjectedBlocks, getActiveToolDefs, abortSignal, numCtx, toApiMsg })
+ *         getInjectedBlocks, getActiveToolDefs, abortSignal, numCtx, toApiMsg, val2 })
  *  其中 history 是"取当前会话消息"的函数（本模块**只读**它：裁剪只作用于这一轮的请求视图，
  *  不再原地 shift —— 见下面 trimForRequest 的注释）；
  *  numCtx 与 toApiMsg 原文件头漏记，但宿主 init 一直在传（移植时补记）。
@@ -52,6 +52,16 @@ export function createAgentContext() {
   let abortSignal = () => undefined;
   let numCtx = () => 0;
   let toApiMsg = (m) => m;
+  /** 参数读取（宿主注入 core/params 的取值口径 val2Of）：可选依赖，没接时用下面的出厂默认。
+   *  只用来读「结果与记录」里的内设上限（record_compact_chars），不参与协议与请求体。 */
+  let val2 = () => undefined;
+
+  /** 压缩时"单条消息最多取多少字"（面板 record_compact_chars，默认 4000） */
+  const COMPACT_MSG_CHARS = 4000;
+  const compactCap = () => {
+    const n = Number(val2('record_compact_chars'));
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : COMPACT_MSG_CHARS;
+  };
 
   /* 注：原实现还注入一个 chatEl()（"消息区在哪"的 DOM 句柄）并把它透传给 addTraceStrip 的第一个参数。
      React 宿主不需要它（追踪条挂在消息对象上），宿主一直传 () => null —— 审计时删掉这个空转的注入项，
@@ -74,6 +84,7 @@ export function createAgentContext() {
     if (d.abortSignal !== undefined) abortSignal = d.abortSignal;
     if (d.numCtx !== undefined) numCtx = d.numCtx;
     if (d.toApiMsg !== undefined) toApiMsg = d.toApiMsg;
+    if (d.val2 !== undefined) val2 = d.val2;
   }
 
   /* ======================= 用量估算 ======================= */
@@ -204,10 +215,11 @@ export function createAgentContext() {
     const opts = Object.assign({}, buildOptions());
     delete opts.tools;                                   // 摘要不需要工具
     const prompt = Prompts.text('compact.prompt');
+    const cap = compactCap();
     const body = oldSlice.map(m => {
       const who = m.role === 'user' ? '用户' : m.role === 'assistant' ? '助手' : m.role === 'tool' ? '工具' : '系统';
       const text = typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
-      return `【${who}】${String(text).slice(0, 4000)}`;
+      return `【${who}】${String(text).slice(0, cap)}`;
     }).join('\n\n');
     const r = await Agent.complete({
       /* 第 4 个参数是**适配器的 opts**，不是参数表：signal 要放进 opts.signal

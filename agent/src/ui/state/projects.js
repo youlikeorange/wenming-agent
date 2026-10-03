@@ -43,10 +43,6 @@ async function setServerCurrent(id) {
   catch (e) { toast('切换项目失败：' + e.message, 'err'); return false; }
 }
 
-/** 本地还有没落到服务端的**项目记忆**改动（有的话不能用服务端快照盖回来）。
- *  用窄口径（只看项目记忆那条链路）：采纳服务端数据会顺手排一条幂等回写，
- *  宽口径会把紧接着的这次刷新自己挡住。 */
-const hasPendingWrites = () => !!(Store.hasPendingProjectWrites && Store.hasPendingProjectWrites());
 /** 当前项目 id（'' = 不归属任何项目）——读写 state 的口径集中在这一处 */
 const currentProjectId = () => String(state.currentProjectId || '');
 
@@ -143,10 +139,14 @@ export function followSessionProject(session) {
 
 /** 当前项目的记忆从服务端重拉一份（界面显示的唯一来源就是它）。
  *  调用点：打开「设置 → 记忆」面板时 / 托管运行结束或改过数据后（见 session.js 的 refreshLightSoon）。
- *  本地还有没落盘的改动时跳过：那份改动马上会写上去，用旧快照盖回来等于把它删了。 */
+ *  **本地待写先落地再取**（2026-10-03 改）：旧实现在"有本地待写"时**直接跳过取数**，
+ *  于是那份陈旧的（往往是空的）快照一直留在手里，紧接着就被整份写回服务端——
+ *  抖音热点项目被清空的事故就是这么发生的。正确顺序是：把本地改动先写上去（幂等），
+ *  再用服务端那份刷新显示；两边的写目标是同一个项目，后到的服务端数据才是真源。 */
 export async function refreshCurrentMemory({ quiet = true } = {}) {
   const id = currentProjectId();
-  if (!id || !Store.user || hasPendingWrites()) return null;
+  if (!id || !Store.user) return null;
+  if (Store.flushProjectMemory) { try { await Store.flushProjectMemory(); } catch { /* 写不上去就按下面的取数兜底 */ } }
   const entries = await fetchProjectMemory(id, { quiet });
   if (entries === null || currentProjectId() !== id) return null;
   adoptProject(byId(id) || Memory.projectMeta, entries);
@@ -155,6 +155,9 @@ export async function refreshCurrentMemory({ quiet = true } = {}) {
 
 /* session.js 切会话时回调这里（循环 import 的替代：会话那边只认钩子，不认项目模块） */
 hooks.onSessionChange = (s) => followSessionProject(s);
+/* 项目记忆的整份覆盖被服务端拒了（409 conflict）→ 把真实那份取回来。
+   走到这里说明手里那份是空的/陈旧的（正常路径不该发生，是兜底自愈）。 */
+hooks.onMemoryConflict = () => refreshCurrentMemory({ quiet: false });
 
 /** 新建项目：选一个根目录 → 服务端建项目记忆文件夹 → 设为当前项目 */
 export async function createProject(root, name) {
@@ -298,11 +301,16 @@ export async function purgeArchived(kind, id) {
   } catch (e) { toast('删除失败：' + e.message, 'err'); return false; }
 }
 
-/** 把当前项目记忆整份写回服务端（界面里手工改完立刻落盘；模型写的那条走 Memory.onChange） */
+/** 把当前项目记忆整份写回服务端（界面里手工改完立刻落盘；模型写的那条走 Memory.onChange）。
+ *  带 baseCount（取回时的条数）：服务端据此做空列表覆盖保护，陈旧快照会被拒（409）而不是删数据。 */
 export async function syncProjectMemory() {
   if (!Memory.projectMeta) return null;
   try {
-    const d = await post(EP.projectsMemory, { id: Memory.projectMeta.id, entries: Memory.serialize('project') }, { timeoutMs: 15000 });
+    const d = await post(EP.projectsMemory, {
+      id: Memory.projectMeta.id,
+      entries: Memory.serialize('project'),
+      baseCount: Memory.projectBaseCount,
+    }, { timeoutMs: 15000 });
     if (Array.isArray(d.entries)) adoptProject(Memory.projectMeta, d.entries);
     return d.entries;
   } catch (e) { toast('保存项目记忆失败：' + e.message, 'err'); return null; }

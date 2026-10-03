@@ -175,7 +175,7 @@ test('C3 行为：服务端给的会话记忆要能被 core 读回并注入（�
   Memory.init({ Prompts });
   // 复刻 applyServerData 修复后的实参形状
   const active = { id: 's1', msgs: [], memory: [{ id: 'm1', title: '会话结论', content: '记住这个' }] };
-  Memory.load([{ id: 'g1', title: '全局', content: 'G' }], active.memory || [], []);
+  Memory.load([{ id: 'g1', title: '全局', content: 'G' }], active.memory || []);
   assert.equal(Memory.serialize('session').length, 1, '会话记忆必须被加载（原先恒为 0）');
   assert.match(Memory.serialize('session')[0].title, /会话结论/);
   // sessionBlock() 返回的是区块对象（{id,title,text}），注入时取 .text —— 不是字符串

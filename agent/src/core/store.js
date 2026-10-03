@@ -23,7 +23,7 @@ const MAX_RETRIES = 20;
 const TOO_LARGE_MSG = '这个对话已经太大，超过服务器单次写入上限，最新内容没能保存。'
   + '请新建一个对话继续，或清空当前对话（原文可在页面上先复制走）。';
 
-const handlers = { needLogin: [], error: [], dropped: [], kicked: [] };
+const handlers = { needLogin: [], error: [], dropped: [], kicked: [], memoryConflict: [] };
 export const on = (evt, fn) => { if (handlers[evt] && typeof fn === 'function') handlers[evt].push(fn); };
 const emit = (evt, arg) => { for (const fn of handlers[evt] || []) { try { fn(arg); } catch { /* 回调异常不影响主流程 */ } } };
 
@@ -39,6 +39,10 @@ async function send(path, body, method) {
       if (e.needLogin) { emit('needLogin', e.message); throw e; }
       if (e.kicked) { emit('kicked', e); throw e; }
       if (e.status === 413) { e.oversize = true; emit('error', TOO_LARGE_MSG); throw e; }
+      /* 409 conflict = 服务端拒绝了这次"整份覆盖"（典型：拿一份空的/陈旧的列表去写项目记忆）。
+         这不是"重试就能好"的错误——重发一百次还是 409。报一条事件让宿主重新取回那份数据，
+         并标记成永久失败（makeWriter 不再重排）。 */
+      if (e.status === 409 && e.conflict) { e.conflictRejected = true; emit('memoryConflict', e); throw e; }
     }
     throw e;
   }
@@ -110,7 +114,9 @@ function makeWriter(label, debounceMs, put) {
     clearTimeout(timer); timer = null;
     try { await put(payload); retries = 0; }
     catch (e) {
-      if (e.needLogin || e.kicked || e.oversize) return;      // 永久失败：重发多少次都一样
+      /* 永久失败：重发多少次都一样 —— 要登录/被顶掉/超上限，以及 409 冲突
+         （整份覆盖被拒：手里那份是空的/陈旧的，重发还是被拒；宿主已收到事件去重新取回）。 */
+      if (e.needLogin || e.kicked || e.oversize || e.conflictRejected) return;
       /* await 期间可能又排进了更新的数据（queue 会填 pending 并起一个新定时器）。
          只在槽位空着时把失败的那份放回去——无条件覆盖会把"更新的那份"丢掉（审计发现）。
          定时器统一由这里重排（上面 clearTimeout 掉 queue 起的那个），避免两个定时器各冲一次。 */
@@ -208,28 +214,35 @@ export const setProjectId = (id) => { currentProjectId = String(id || ''); };
 const memoryWriter = makeWriter('全局记忆', MEMORY_DEBOUNCE, (entries) => send(EP.memory, { entries }));
 /* 项目记忆：真源是服务端账号目录里的 Markdown 文件夹（每条记忆一个 .md），
    所以写的是"整份项目记忆"（全量覆盖），与全局记忆同一套防抖口径。
-   没有当前项目就**根本不发**：服务端对空 id 回 400，而 makeWriter 把它当"可重试"退回重排，
-   于是白跑 20 次（每次间隔 5 秒）再给用户一条"连续 20 次保存失败"的错提示。
-   约定 6 要求"没有当前项目时绝不发项目记忆写请求"——那道防线原先只在宿主的一处 if 上，
-   这里补上 Store 自己的守卫，任何调用点都绕不过去。 */
-/* 项目记忆：真源是服务端账号目录里的 Markdown 文件夹（每条记忆一个 .md），
-   所以写的是"整份项目记忆"（全量覆盖），与全局记忆同一套防抖口径。
    **写入目标 id 在入队那一刻就定下来**（跟条目一起进 payload）——不能在 flush 时才读
    `currentProjectId`：用户在这 600ms 里切了项目的话，A 项目的条目会被写进 B 项目的文件夹
    （服务端是全量覆盖，等于把 B 的记忆删了）。
+   **baseCount** = "取回这份条目时服务端有几条"，随请求一起发。服务端拿它做**空列表覆盖保护**：
+   一份空的、且基准对不上的列表 = 拿陈旧/空快照去删别人的记忆 → 直接拒绝并回现状
+   （2026-10-03 抖音热点项目被清空事故）。客户端收到 conflict 会重新取回，自愈。
    没有当前项目就**根本不发**：服务端对空 id 回 400，而 makeWriter 把它当"可重试"退回重排，
    于是白跑 20 次（每次间隔 5 秒）再给用户一条"连续 20 次保存失败"的错提示。
    约定 6 要求"没有当前项目时绝不发项目记忆写请求"——那道防线原先只在宿主的一处 if 上，
    这里补上 Store 自己的守卫，任何调用点都绕不过去。 */
-const projectWriter = makeWriter('项目记忆', MEMORY_DEBOUNCE, ({ id, entries }) => {
+const projectWriter = makeWriter('项目记忆', MEMORY_DEBOUNCE, ({ id, entries, baseCount }) => {
   if (!id) return Promise.resolve({ ok: true, skipped: 'no-project' });
-  return send(EP.projectsMemory, { id, entries });
+  return send(EP.projectsMemory, { id, entries, baseCount });
 });
 const promptsWriter = makeWriter('提示词与技能', PROMPTS_DEBOUNCE, (prompts) => send(EP.prompts, { prompts }));
 
 export const queueMemory = (entries) => memoryWriter.queue(entries);
-export const queueProjectMemory = (entries) => projectWriter.queue({ id: currentProjectId, entries });
+/** @param {Array} entries 整份项目记忆
+ *  @param {number} [baseCount] 取回这份条目时服务端有几条（空列表覆盖保护的基准；缺省不带） */
+export const queueProjectMemory = (entries, baseCount) =>
+  projectWriter.queue({ id: currentProjectId, entries, baseCount: Number.isFinite(Number(baseCount)) ? Number(baseCount) : undefined });
 export const queuePrompts = (prompts) => promptsWriter.queue(prompts);
+
+/** 只把**项目记忆**那条待写落地（刷新项目记忆前先调：让本地改动先上去，
+ *  再用服务端那份覆盖显示——否则"本地刚改"与"服务端快照"互相盖，谁后谁赢）。
+ *  没有待写就是空操作。 */
+export async function flushProjectMemory() {
+  if (projectWriter.hasPending()) await projectWriter.flushNow();
+}
 
 /* ============================ 收尾 ============================ */
 
@@ -263,7 +276,7 @@ export const Store = {
   queueSettings,
   queueSession, archiveSession, hasPendingSession,
   queueMemory, queueProjectMemory, setProjectId, queuePrompts,
-  flush, pendingWrites, hasPendingProjectWrites,
+  flush, flushProjectMemory, pendingWrites, hasPendingProjectWrites,
   get user() { return user; },
   get info() { return info; },
   get binding() { return (info && info.binding) || null; },

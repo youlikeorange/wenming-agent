@@ -67,6 +67,13 @@ export function val2(key) {
    `AgentPolicy.eff(S.params, TOOL_DEFAULTS)` 同一口径（只在「自定」档下才会读那四个开关）。 */
 export const accessOf = () => Assemble.accessOfEnv(assembleEnv(), TOOL_DEFAULTS);
 
+/** 追踪条单条结果的字数上限（面板 record_trace_chars，默认 4000）。
+ *  与内核 trace 及服务端托管运行同一个键：三处口径必须一致，否则"实时显示"与"落盘记录"会不一样长。 */
+const traceChars = () => {
+  const n = Number(val2('record_trace_chars'));
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : 4000;
+};
+
 /* ============================ 提示词组装 ============================ */
 
 /** 本轮注入的区块与工具（界面展示与实际发送同源） */
@@ -185,8 +192,12 @@ export function fillTraceStrip(token, info) {
     kind: info.kind || t.kind || 'tool',
     /* 参数同样要瘦身：write_file 的参数里带着整个文件内容，直接挂在追踪条上
        = 每次落盘序列化几 MB、展开详情时在 DOM 里放几 MB（写大文件卡死的主因之一）。
-       与内核 trace 用同一个 shrinkArgs，实时显示与落盘记录口径一致。 */
-    args: Agent.shrinkArgs(info.args), result: String(info.result || '').slice(0, 4000), ms: info.ms,
+       与内核 trace 用同一个 shrinkArgs，实时显示与落盘记录口径一致。
+       两个上限都可在「权限与工具 → 结果与记录」调（record_args_chars / record_trace_chars）。 */
+    args: Agent.shrinkArgs(info.args, val2('record_args_chars')),
+    result: String(info.result || '').slice(0, traceChars()), ms: info.ms,
+    /* 真实字数（未截断前）：界面显示"模型实际收到多少 / 这里只显示前 N 字" */
+    resultChars: String(info.result || '').length,
   });
   traceStrips.delete(token);
   touch();
@@ -253,6 +264,9 @@ export const hooks = {
   onPullLatest: null,
   /* 待下载目录变了（模型刚把文件交给用户）→ 刷新菜单列表与计数（实现落在 ui/state/downloads.js） */
   onFilesChanged: null,
+  /* 项目记忆的整份覆盖被服务端拒绝（409：手里是空的/陈旧的快照）→ 重新取回那份数据。
+     实现在 ui/state/projects.js（它持有唯一取数路径）。没接线时最坏情况是"面板停在旧数据上"。 */
+  onMemoryConflict: null,
   /* 确认框里「以后不再问我」的落点（实现在 ui/state/settings.js，它才持有 setParam）。
      留着空实现是**刻意的**：没接线时勾选框点了也不生效，但绝不会因此放宽任何闸门。 */
   onExecAllow: () => {},
@@ -310,6 +324,7 @@ export function wireCore() {
     getActiveToolDefs: () => AgentDefs.activeToolDefs(),
     abortSignal: () => (state.abortSignal || null),
     toApiMsg,
+    val2,                                     // 压缩输入单条上限（record_compact_chars）等内设上限走它
   });
 
   Memory.init({ Prompts });
@@ -324,19 +339,31 @@ export function wireCore() {
   Store.on('error', (msg) => toast(msg, 'err'));
   Store.on('dropped', (d) => toast(`服务端空间不足，已丢弃最旧的 ${d.n} 个会话（重要内容请先在设置 → 数据里备份）`, 'err'));
   Store.on('kicked', (e) => Presence.noteKicked(e && e.owner));
+  /* 项目记忆的整份覆盖被拒（409：手里那份是空的/陈旧的）→ 把真实那份取回来（自愈）。
+     服务端同时把现状放在 payload.entries 里，但取数**只走一条路**（refreshCurrentMemory），
+     这里不就地采用，避免又长出第二条取数口径。 */
+  Store.on('memoryConflict', (e) => {
+    toast('项目记忆在服务端已经变了（' + ((e && e.message) || '') + '），正在重新读取…', 'err');
+    if (typeof hooks.onMemoryConflict === 'function') hooks.onMemoryConflict();
+  });
 
   /* core 层对象（登记表 / 记忆）自己改了就让界面重绘 + 落盘。
-     两条链路各自独立：prompts → 提示词登记表端点；memory → 全局记忆端点（会话那段随会话落盘）。 */
+     两条链路各自独立：prompts → 提示词登记表端点；memory → 各作用域各自的落点。 */
   Prompts.onChange(() => {
     Store.queuePrompts(Prompts.serialize());
     touch();
   });
-  Memory.onChange(() => {
-    Store.queueMemory(Memory.serialize('global'));
-    // 项目记忆写的是"当前项目"那份（真源在服务端账号目录的项目记忆文件夹里）；
-    // 没有当前项目时**绝不发**——否则会把上一个项目的记忆写到一个不存在的地方
-    if (Memory.projectMeta) Store.queueProjectMemory(Memory.serialize('project'));
-    persistSession();
+  /* **按作用域分发**（2026-10-03）：回调参数是"变了的类"，只写那一类——
+     旧实现任何一次变更（写一条全局记忆、清一次会话记忆）都会把三类都整份写回，
+     项目记忆因此被"顺手"用陈旧快照覆盖过（抖音热点项目被清空的事故）。
+     项目记忆另外要求**这份条目确实是从服务端取回来的**（projectLoaded）：
+     没取回来过就写 = 拿一份不知道对不对的（往往是空的）列表去覆盖服务端。 */
+  Memory.onChange((scopes) => {
+    if (scopes.includes('global')) Store.queueMemory(Memory.serialize('global'));
+    if (scopes.includes('project') && Memory.projectMeta && Memory.projectLoaded) {
+      Store.queueProjectMemory(Memory.serialize('project'), Memory.projectBaseCount);
+    }
+    if (scopes.includes('session')) persistSession();
     touch();
   });
 }

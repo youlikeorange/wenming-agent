@@ -1,4 +1,5 @@
-// ui/components/ui/sheet.jsx —— 侧边抽屉（Radix Dialog 改造）：side="right"|"left"，宽度用 className 覆盖（如 w-[420px]）
+// ui/components/ui/sheet.jsx —— 抽屉（Radix Dialog 改造）：side="right"|"left"|"bottom"，尺寸用 className 覆盖
+// （桌面设置抽屉传 w-[min(900px,96vw)]；手机的底部列表传 w-full，基类的 h-full/w-3/4/sm:max-w-md 会被 twMerge 顶掉）
 import * as React from 'react';
 import { Dialog as DialogPrimitive } from 'radix-ui';
 import { X } from 'lucide-react';
@@ -7,10 +8,12 @@ import { cn } from '../../lib/utils.js';
 export const Sheet = DialogPrimitive.Root;
 export const SheetPortal = DialogPrimitive.Portal;
 
-/** 左右两套定位：贴边 + 单侧描边 + 对应方向的滑入/滑出动画 */
+/** 三套定位：贴边 + 单侧描边 + 对应方向的滑入/滑出动画。
+ *  bottom 是手机上的"底部面板"：高度随内容（上限 72vh），圆角只在上面两角。 */
 const SIDE_CLS = {
   right: 'inset-y-0 right-0 border-l ui-anim-slide-right',
   left: 'inset-y-0 left-0 border-r ui-anim-slide-left',
+  bottom: 'inset-x-0 bottom-0 h-auto max-h-[72vh] rounded-t-2xl border-t ui-anim-slide-up',
 };
 
 export const SheetOverlay = React.forwardRef(({ className, ...props }, ref) => {

@@ -1,25 +1,18 @@
-// ParamsSection.jsx —— 生成参数：作用范围（全局 / 当前模型）、快速预设、按组参数行、Agent 行为子区
+// ParamsSection.jsx —— 模型参数：作用范围（全局 / 当前模型）、快速预设、按组参数行
+/*  边界（唯一一份，改动前先读）：**这一页只放模型生成参数**（core/params.js 的 FIELDS：
+ *  温度/采样/重复惩罚/上下文与扩展）。工具的开关、调用次数、可访问目录与权限在「权限与工具」
+ *  （TOOL_FIELDS）。两页曾经各画一份工具参数（同键两处可改），2026-10-03 去重：工具项只留在
+ *  「权限与工具」。新增参数时按这条归位，别再让同一项出现在两页里。 */
 import { useState } from 'react';
 import { Eraser, RotateCcw } from 'lucide-react';
 import { useApp } from '../../state/store.js';
 import { activeProvider } from '../../state/host.js';
 import { setParam, resetParamSection, applyPreset, clearModelOverrides } from '../../state/settings.js';
-import { FIELDS, GROUPS, PRESETS, TOOL_FIELDS, modelKey, overriddenBy, resolve } from '../../../core/params.js';
-import { AgentPolicy } from '../../../core/policy.js';
+import { FIELDS, GROUPS, PRESETS, modelKey, overriddenBy, resolve } from '../../../core/params.js';
 import { Badge } from '../../components/ui/badge.jsx';
 import { Button } from '../../components/ui/button.jsx';
 import { FieldDesc, SectionTitle } from '../../components/ui/field.jsx';
 import { ChoiceGroup, EmptyHint, NoteBox, ParamRow } from './parts.jsx';
-
-/* Agent 行为子区的分组顺序与标题（TOOL_FIELDS 的 group 字段为准） */
-const TOOL_GROUPS = [
-  ['access', '访问级别与豁免'],
-  ['fs', '文件与目录'],
-  ['exec', '命令行'],
-  ['search', '联网搜索'],
-  ['memory', '记忆'],
-  ['skills', '技能'],
-];
 
 /* ============================ 作用范围 ============================ */
 
@@ -93,48 +86,6 @@ function GroupBlock({ group, values, settings, pid, model, scope }) {
   );
 }
 
-/* ============================ Agent 行为（全局一份） ============================ */
-
-function toolDesc(key, all) {
-  if (key !== 'agent_access') return null;
-  const meta = AgentPolicy.meta(all.agent_access);
-  return `${meta.label}：${AgentPolicy.summary(AgentPolicy.eff(all, null))}`;
-}
-
-function ToolBlock({ all }) {
-  return (
-    <section>
-      <SectionTitle>Agent 行为</SectionTitle>
-      <NoteBox>
-        下面这些是与工具、权限相关的参数，只有全局一份（不参与每模型覆盖）：
-        选了「当前模型」作用范围时，它们改动依然对所有模型生效。
-      </NoteBox>
-      <div className="space-y-3 pt-2">
-        {TOOL_GROUPS.map(([gid, title]) => {
-          const entries = Object.entries(TOOL_FIELDS).filter(([, f]) => f.group === gid);
-          if (!entries.length) return null;
-          return (
-            <div key={gid}>
-              <p className="px-1 pb-1 text-xs font-medium text-subtle">{title}</p>
-              <div className="overflow-hidden rounded-lg border border-border">
-                {entries.map(([key, field]) => (
-                  <ParamRow
-                    key={key}
-                    field={field}
-                    value={all[key]}
-                    desc={toolDesc(key, all)}
-                    onChange={(v) => setParam(key, v, '')}
-                  />
-                ))}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
 /* ============================ 当前模型条 ============================ */
 
 function ActiveModelBar({ p, scope, onClear }) {
@@ -168,7 +119,6 @@ export default function ParamsSection() {
   const [pid, pmodel] = modelPair(p);
   const focused = scope ? [pid, pmodel] : ['', ''];
   const values = resolve(settings, focused[0], focused[1]);
-  const all = resolve(settings, pid, pmodel);
 
   return (
     <div className="space-y-4 pb-6">
@@ -190,7 +140,12 @@ export default function ParamsSection() {
 
       {mk ? null : <EmptyHint className="mx-4">配置一个模型后，这里可以按模型单独覆盖参数。</EmptyHint>}
 
-      <ToolBlock all={all} />
+      <div className="px-4">
+        <NoteBox>
+          这一页只放<b>模型生成参数</b>（可以按模型单独覆盖）。工具的开关、调用次数与上限、
+          可访问目录与权限在「<b>权限与工具</b>」里。
+        </NoteBox>
+      </div>
     </div>
   );
 }

@@ -198,6 +198,8 @@ const HANDLERS = {
     if (at) Object.assign(at, {
       kind: at.kind === 'sub' ? 'sub' : 'tool', state: 'done', label: ev.label || at.label, name: ev.name || at.name,
       ok: ev.ok !== false, note: ev.note || '', args: ev.args, result: ev.result, ms: ev.ms, callId: ev.callId || at.callId,
+      /* 真实字数（记录上限截断前的长度）：追踪条显示"模型收到多少 / 只显示前 N 字" */
+      resultChars: ev.resultChars,
     });
     touchSoon();
   },

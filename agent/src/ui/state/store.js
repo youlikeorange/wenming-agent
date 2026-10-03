@@ -8,6 +8,7 @@
  *    · 组件**不直接改 state**，一律调 actions（ui/state/*.js 里的函数）。
  */
 import { useSyncExternalStore } from 'react';
+import { FIELDS } from '../../core/params.js';   // 用量环的初始分母 = schema 的 ctxLimit 默认（唯一真源，别再抄一份）
 
 export const state = {
   ready: false,            // 首次初始化（探针 + 拉取）是否完成
@@ -27,7 +28,7 @@ export const state = {
   downloads: { open: false, entries: [], dir: '', loading: false, error: '' },  // 「📥 待下载」目录（传输文件插件）
   status: { connected: false, checking: false, models: [], error: '', model: '' },
   agentStatus: null,       // /agent/tools/status：绑定、白名单、上限、危险清单
-  ctx: { used: 0, limit: 32768, pct: 0, state: 'ok' },   // 用量环
+  ctx: { used: 0, limit: FIELDS.ctxLimit.def, pct: 0, state: 'ok' },   // 用量环（初始值 = schema 默认，拉到真实设置前先画这个）
   presence: { active: true, owner: null, enforce: true },
   drawer: { open: false, section: 'appearance' },
   confirm: null,           // 当前确认框（见 askConfirm）

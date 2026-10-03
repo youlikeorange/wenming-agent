@@ -38,7 +38,7 @@
  *   /agent/store/*            → 配置、会话、记忆、提示词登记表（按文档站账号）
  *   /agent/upstream/*         → 模型代转（密钥在服务端；只认标准 OpenAI / Anthropic 协议）
  *   /agent/tools/*            → 文件与目录、命令行（以绑定账号的权限执行）
- *   /agent/search             → 服务端联网搜索（AnySearch，API Key 不下发前端）
+ *   /agent/search             → 服务端联网搜索（AnySearch，默认匿名不带 API Key）
  *   GET  /<静态文件>          → public/ 下的静态资源（目录路径自动补 index.html；
  *                               public 内媒体免登录，文档根媒体仍走鉴权）
  *

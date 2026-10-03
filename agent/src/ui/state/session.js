@@ -140,7 +140,10 @@ async function fetchProjectEntries(id) {
  *  **不碰会话/历史/当前会话指针**：那些是这一页的浏览状态，后台刷新不该改它们。 */
 async function applyServerLight(d, projectId) {
   Prompts.load(d.prompts || {});
-  Memory.load(d.memory || [], Memory.serialize('session'), Memory.serialize('project'));
+  /* 只灌全局与会话两类：**项目条目不经 load()**（它只有 setProject(meta, entries) 一条来路，
+     条目与项目 id 必须一起给，见 core/memory.js）。旧写法把 serialize('project') 塞成第三个
+     参数"免得触发 emit"——那条路已作废，条目一律由下面的唯一取数路径取回。 */
+  Memory.load(d.memory || [], Memory.serialize('session'));
   if (Array.isArray(d.projects)) patch({ projects: d.projects });
   if (!projectId || String(state.currentProjectId || '') !== projectId) return;
   const entries = await fetchProjectEntries(projectId);
@@ -337,11 +340,11 @@ export function selectSession(id) {
   patch({ activeSessId: id, history: (s.msgs || []).slice() });
   Prompts.clearLoaded();
   /* 只换"会话记忆"那一段：全局与项目记忆由各自的来源决定，不随会话变。
-     但 Memory.load 内部会对三份都做 sig 比较，有变化才 emit——所以这里传入**当前已有的**
-     那两份（serialize 出来的内容与现状相同 → 不 emit → 不会排出无用的写请求）。
+     Memory.load 只碰全局与会话两类、且各自有变化才 emit（2026-10-03 起事件还带作用域），
+     所以这里不会排出"项目记忆整份覆盖"这类无用的写请求。
      审计 C11：旧写法把 global/project 也 serialize 一遍塞回去，注释说"只换会话那一段"、
      实现却会各自 emit 一次，平白排两条整份覆盖写请求。 */
-  Memory.load(Memory.serialize('global'), s.memory || [], Memory.serialize('project'));
+  Memory.load(Memory.serialize('global'), s.memory || []);
   AgentContext.invalidateCompaction();
   /* currentSess 与 activeId 一次性写：两次 patch + 两次 saveSettings 会让
      Store 的防抖写入器白跑一轮（同一次点击内，中间那份快照没有任何人会读到）。 */
