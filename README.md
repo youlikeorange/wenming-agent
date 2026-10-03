@@ -33,7 +33,9 @@
 
 - **设计取舍**：提示词全部可见可改（发给模型的每一句都在一张表里）、没有 MCP（工具内置、无中转进程）、
   纯 CLI 执行（真 shell 进程 + 本机 CLI 工具）、SKILL.md 技能模式（技能是数据，按需加载）——见下一节。
-- **双层运行**：可以在浏览器里跑本地循环，也可以交给服务端跑——**托管运行时关掉标签页、断网、换窗口都不中断**，回来接着看。
+- **循环只在服务端跑**：一轮对话由服务端执行（托管运行），浏览器只做显示与转达——
+  **关掉标签页、断网、换窗口都不中断**，回来接着看。同一份内核也随仓库分发，服务端装载的
+  就是它（见下节架构）。
 - **工具与权限**：文件读写、命令执行、联网搜索、记忆、技能、子智能体；访问级别 + 危险命令闸门
   （「总是允许」清单 + 危险命令自保清单）+ 可访问目录白名单。
 - **记忆三层**：全局记忆 / 项目记忆（服务端 Markdown 文件夹）/ 会话记忆，另有自动压缩与用量统计。
@@ -95,33 +97,39 @@
 
 ```mermaid
 flowchart LR
-  subgraph B["浏览器"]
+  subgraph B["浏览器 · 只做显示与转达（不跑循环）"]
     UI["React 界面<br/>agent/src/ui"]
-    Core["零框架内核<br/>agent/src/core"]
   end
   subgraph S["服务端 · lib/agent（/agent/*）"]
     Router["路由 · 身份 · 单窗口互斥"]
-    Run["托管运行<br/>run-*"]
+    Run["托管运行<br/>run-loop 跑 agent 循环"]
+    Core["同一份内核<br/>agent/src/core"]
     Store["会话 · 记忆 · 项目 · 技能"]
     Tools["工具执行<br/>tools/*"]
   end
   Model["上游模型<br/>OpenAI / Anthropic 兼容"]
-  UI --> Router
-  Core --> Router
+  UI -->|"POST /agent/run/start"| Router
   Router --> Run
-  Router --> Store
+  Run --> Core
   Run --> Tools
-  Run --> Model
-  Model -.->|SSE 事件流| UI
+  Run --> Store
+  Core --> Model
+  Model -.->|"SSE 事件流 · /agent/run/hub"| UI
 ```
 
-一轮对话的两种跑法：**本地循环**（`core/agent.js` 在浏览器里跑，请求经 `/agent/upstream/*` 代转）
-与**托管运行**（`POST /agent/run/start` 起在服务端，界面订阅 SSE）。两者共用同一份内核代码。
+**一轮对话只有一种跑法：托管运行。** 循环跑在服务端——`lib/agent/run-loop.js` 装载的正是
+`agent/src/core/` 这份内核（`core/agent.js` 的循环、工具分发、协议适配、组装；经 `run-core.js`
+把 HTTP 换成进程内直调、最后一跳换成本机直连上游），所以**同一份内核只有一份实现**，
+浏览器里不再跑它。界面订阅 `GET /agent/run/hub` 的一条 SSE 看本账号全部运行，
+关掉标签页、断网、换窗口都不中断。
+
+浏览器侧仍会直接发起的上游请求只剩两类**单次调用**（都经 `/agent/upstream/*` 代转、密钥仍在
+服务端注入）：设置里的「拉取模型清单」，以及手动压缩（把较早对话压成摘要的那一次）。
 模块清单与调用流程见 [`agent/ARCHITECTURE.md`](agent/ARCHITECTURE.md)。
 
 | 层 | 位置 | 说明 |
 | --- | --- | --- |
-| 内核 | `agent/src/core/` | 循环 / 工具分发 / 协议适配 / 上下文压缩 / 记忆 / 策略。不认识 React，依赖全部注入 |
+| 内核 | `agent/src/core/` | 循环 / 工具分发 / 协议适配 / 上下文压缩 / 记忆 / 策略。不认识 React，依赖全部注入；**由服务端装载运行**（浏览器侧只用它做注入预览、手动压缩与状态） |
 | 界面 | `agent/src/ui/` | React 19 + Tailwind v4 + shadcn 风格组件；快照式状态订阅 |
 | 服务端 | `lib/agent/` | `/agent/*`：探针 · 存储 · 上游代转 · 托管运行 · 工具 · 技能 · 项目 · 归档 · 搜索 |
 
