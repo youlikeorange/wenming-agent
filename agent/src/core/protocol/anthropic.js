@@ -95,12 +95,29 @@ export async function listModels(cfg, signal) {
   return (d.data || []).map((m) => m.id).filter(Boolean).sort();
 }
 
+/** 上游非 2xx：状态码 + 正文摘要（与 openai.js 同一口径）——
+ *  **必须报出来**：不查 r.ok 的话，错误响应被当成"空流"，整轮看起来像模型没说话。 */
+async function errorText(r) {
+  const head = 'HTTP ' + r.status;
+  let txt = '';
+  try { txt = String(await r.text()).slice(0, 800); } catch { return head; }
+  if (!txt.trim()) return head;
+  let msg = txt;
+  try { const o = JSON.parse(txt); msg = (o.error && o.error.message) || o.message || txt; } catch { /* 原样 */ }
+  return head + '：' + String(msg).slice(0, 300);
+}
+
 export async function* chat(cfg, messages, params, opts = {}) {
   const body = buildBody(cfg, messages, params, opts);
   const r = await upstreamChat(refOf(cfg), body, opts.signal, opts.sessionId);
+  if (!r.ok) {
+    yield { type: 'error', message: await errorText(r), status: r.status };
+    return;
+  }
   let usage = null;
   let cur = null;          // 正在累积的 tool_use 块
   let jsonStr = '';
+  let sawStop = false;     // 见过 stop_reason / message_stop = 这次响应正常收尾（见文件尾）
   /* 正文里"写成工具调用"的标记（DSML / XML）同样要认回来——有的兼容网关把
      tool_use 漏成 text_delta 下发，见 protocol/textcalls.js。 */
   const tc = textCallSplitter();
@@ -109,6 +126,7 @@ export async function* chat(cfg, messages, params, opts = {}) {
     let o; try { o = JSON.parse(data); } catch { continue; }
     const type = o.type || event;          // 官方事件类型在 data 里；event: 行作兜底
     if (type === 'error') { yield { type: 'error', message: (o.error && o.error.message) || 'API error' }; return; }
+    if (type === 'message_stop') sawStop = true;
 
     if (type === 'content_block_start' && o.content_block && o.content_block.type === 'tool_use') {
       cur = { id: o.content_block.id, name: o.content_block.name };
@@ -128,7 +146,7 @@ export async function* chat(cfg, messages, params, opts = {}) {
     }
     if (type === 'message_delta') {
       if (o.usage) usage = o.usage;
-      if (o.delta && o.delta.stop_reason) yield { type: 'stop', reason: stopReason(o.delta.stop_reason) };
+      if (o.delta && o.delta.stop_reason) { sawStop = true; yield { type: 'stop', reason: stopReason(o.delta.stop_reason) }; }
     }
     if (type === 'message_start' && o.message && o.message.usage) usage = o.message.usage;
   }
@@ -136,6 +154,9 @@ export async function* chat(cfg, messages, params, opts = {}) {
   if (usage) {
     yield { type: 'stats', raw: { eval_count: usage.output_tokens, prompt_eval_count: usage.input_tokens } };
   }
+  /* 结束形态：见过 stop_reason / message_stop = 上游正常收尾；没见过 = 半路被掐断
+     （内核据此不把半截响应当成"回答完了"；与 openai.js 的 [DONE]/finish_reason 同一口径）。 */
+  yield { type: 'stream_end', clean: sawStop };
 }
 
 export const anthropic = {

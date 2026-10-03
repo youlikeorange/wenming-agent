@@ -48,7 +48,7 @@ const PLUGIN_TOOL_NAMES = new Set(FS_READ_NAMES.concat(FS_WRITE_NAMES, FS_DELETE
 /* 会弹确认框、且会改动东西的工具：串行执行（agent.js 里"写类工具宜 sequential"）。
    一来它们都要过同一个确认框（并行会抢同一个弹框），
    二来两条命令/一次写入本来也不该同时动同一份东西。只读类照旧并行。 */
-const CONFIRM_SEQUENTIAL = new Set(FS_WRITE_NAMES.concat(FS_DELETE_NAMES, ['run_command', 'skill_write', 'skill_delete']));
+const CONFIRM_SEQUENTIAL = new Set(FS_WRITE_NAMES.concat(FS_DELETE_NAMES, ['run_command', 'skill_write', 'skill_delete', 'todo_write']));
 const FS_LABEL = {
   read_file: '读文件', list_directory: '列目录', directory_tree: '目录树', search_files: '找文件',
   get_file_info: '文件属性', write_file: '写文件', edit_file: '改文件', create_directory: '建目录',
@@ -246,6 +246,26 @@ export function createAgentDefs() {
     return { id: 'plugin.need_bind.note', title: '未绑定本机账号 · 插件工具不可用', text };
   }
 
+  /** 任务清单（todo_write）：**没有开关**——agent 自己决定要不要列（列了才有）。
+   *  一份清单全量覆盖；全完成即丢弃（见 lib/agent/todo.js）。 */
+  function todoToolDefs() {
+    const T = (k) => Prompts.text(k);
+    return [{ type: 'function', function: {
+      name: 'todo_write',
+      description: T('tool.todo_write.schema.desc'),
+      parameters: p({
+        items: {
+          type: 'array',
+          description: '整份清单（全量覆盖，每次都给全）：每项一件事、一句话；没写的项等于被删掉',
+          items: p({
+            text: { type: 'string', description: '这件事做什么（一句话）' },
+            status: { type: 'string', enum: ['pending', 'completed'], description: 'pending=还没做；completed=已完成（完成时间由系统记）' },
+          }, ['text', 'status']),
+        },
+      }, ['items']),
+    } }];
+  }
+
   /** 本轮注册的插件工具：开关在侧栏「🔌 插件」里，关掉即不注册、也不注入它的说明。 */
   function pluginToolDefs() {
     if (!AGENT_API || !pluginsAllowed()) return [];
@@ -316,6 +336,7 @@ export function createAgentDefs() {
     if (searchOn()) defs.push(searchToolDef());
     defs.push(...skillsToolDefs());
     defs.push(...memoryToolDefs());
+    if (Prompts.enabled('tool.todo_write.desc') || Prompts.enabled('tool.todo_write.schema.desc')) defs.push(...todoToolDefs());
     defs.push(...pluginToolDefs());
     defs.push(...subagentToolDefs());
     return defs;
@@ -326,8 +347,11 @@ export function createAgentDefs() {
    *  · allowWrite=false 时去掉写/删/命令与一切会改数据的工具（含 memory_write / skill_* 的写侧）。
    *  判据用"名字是否属于只读集合"，新增工具忘了归类时**默认不给**（保守方向）。 */
   function subagentToolDefsFor(all, allowWrite) {
-    if (allowWrite) return all.filter((d) => d.function.name !== 'spawn_agent');
-    return all.filter((d) => SUBAGENT_ALLOWED_NAMES.has(d.function.name));
+    /* 一律不给的：spawn_agent（不许递归）与 todo_write（清单是主对话的规划工具，
+       子智能体只干被派的那一件事——让它改主对话的清单只会两头对不上）。 */
+    const excluded = (n) => n === 'spawn_agent' || n === 'todo_write';
+    if (allowWrite) return all.filter((d) => !excluded(d.function.name));
+    return all.filter((d) => SUBAGENT_ALLOWED_NAMES.has(d.function.name) && !excluded(d.function.name));
   }
 
   /** 工具卡片的标题（追踪条与落盘的 trace 都用它）。
@@ -341,6 +365,12 @@ export function createAgentDefs() {
       deliver_file: () => `传给用户：${shorten(a.name || a.path || '(未指定文件)', 48)}`,
       use_skill: () => `加载技能：${a.name || '(未指定)'}`,
       run_command: () => `命令：${shorten(a.command, 60)}`,
+      /* 标题函数都**不带参数**（统一闭包读外层的 a）——写成 (args) => … 会拿到 undefined */
+      todo_write: () => {
+        const items = Array.isArray(a.items) ? a.items : [];
+        const done = items.filter((i) => i && i.status === 'completed').length;
+        return items.length ? `任务清单：${done}/${items.length}` : '任务清单：清空';
+      },
       spawn_agent: () => `子智能体：${shorten(a.label || a.task || '(未给任务)', 44)}`,
     };
     const name = (call && call.name) || '';

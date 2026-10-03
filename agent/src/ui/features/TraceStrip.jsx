@@ -7,6 +7,7 @@ import { cn } from '../lib/utils.js';
 import { traceKind, traceRunning } from '../lib/trace.js';
 import { subagentRecord } from '../state/run.js';
 import { downloadUrl } from '../state/downloads.js';
+import { openFileDiff } from '../state/fileDiff.js';
 import { fmtBytes, fmtCount } from '../lib/format.js';
 
 /* 判据全是结构化字段（state/kind），不再比对中文文案——旧会话数据由 ui/lib/trace.js
@@ -48,20 +49,50 @@ const prefixOf = (t) => (isSteer(t) ? '💬 ' : isSub(t) ? '👥 ' : '');
 /** 行数取值（负数/NaN 一律当 0） */
 const lineCount = (v) => Math.max(0, Math.floor(Number(v) || 0));
 
+/** 打开「比对修改」抽屉并带定位（点击与键盘两处共用一份载荷） */
+const openDiffOf = (undoRef) => openFileDiff({
+  runId: undoRef.runId, sessionId: undoRef.sessionId,
+  files: undoRef.paths.map((p) => ({ path: p, entry: undoRef.entry })),
+});
+
 /** 写入 / 删除的行数（写文件、改文件、删文件、移动/建目录才有）：
  *  服务端在工具执行前后各拍一次快照比出来的（见 lib/agent/undo.js），随结果一路传到这条卡片上。
- *  绿色 +N = 写入的行、红色 −M = 删除的行；两个都是 0 就不画。 */
-function DiffChip({ lines }) {
+ *  绿色 +N = 写入的行、红色 −M = 删除的行；两个都是 0 就不画。
+ *  **可点**（带 undoRef 时）：打开「比对修改」抽屉看这个文件 之前/之后 的逐行差异。
+ *  点击要 stopPropagation：外层是展开/收起追踪条的触发器，点这里不该连带展开详情。 */
+function DiffChip({ lines, undoRef }) {
   const added = lineCount(lines && lines.added);
   const removed = lineCount(lines && lines.removed);
   if (!added && !removed) return null;
   const num = (v, cls, sign) => (v ? <span className={cls}>{sign}{fmtCount(v)}</span> : null);
-  return (
-    <span className="shrink-0 text-[11px] tabular-nums" title={`这次改动：写入 ${fmtCount(added)} 行、删除 ${fmtCount(removed)} 行`}>
+  const body = (
+    <>
       {num(added, 'text-success', '+')}
       {added && removed ? <span className="text-subtle">/</span> : null}
       {num(removed, 'text-destructive', '−')}
       <span className="text-subtle">行</span>
+    </>
+  );
+  if (!undoRef) {
+    return <span className="shrink-0 text-[11px] tabular-nums" title={`这次改动：写入 ${fmtCount(added)} 行、删除 ${fmtCount(removed)} 行`}>{body}</span>;
+  }
+  /* role=button 的 span（不是 <button>）：这一行外层就是 CollapsibleTrigger（本身是 button），
+     嵌套 button 是非法 HTML。点击要 stopPropagation——否则会连带展开/收起追踪条。 */
+  return (
+    <span
+      role="button"
+      tabIndex={0}
+      className="shrink-0 cursor-pointer rounded px-1 text-[11px] tabular-nums transition-colors hover:bg-muted"
+      title={`这次改动：写入 ${fmtCount(added)} 行、删除 ${fmtCount(removed)} 行\n点击查看前后对比`}
+      onClick={(e) => { e.stopPropagation(); openDiffOf(undoRef); }}
+      onKeyDown={(e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault();
+        e.stopPropagation();
+        openDiffOf(undoRef);
+      }}
+    >
+      {body}
     </span>
   );
 }
@@ -79,7 +110,7 @@ function Head({ t }) {
       <span className={cn('min-w-0 flex-1 truncate text-left', running && 'shimmer', isSteer(t) && 'text-foreground')}>
         {prefixOf(t)}{labelOf(t)}
       </span>
-      {running ? null : <DiffChip lines={t.lines} />}
+      {running ? null : <DiffChip lines={t.lines} undoRef={t.undoRef} />}
       {meta ? (
         <span title={charsOf(t).truncated ? `只显示前 ${fmtCount(charsOf(t).shown)} 字，模型实际收到 ${fmtCount(charsOf(t).total)} 字` : undefined}
           className={cn('shrink-0 text-[11px] tabular-nums', failed ? 'text-destructive' : 'text-subtle')}>{meta}</span>

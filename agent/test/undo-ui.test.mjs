@@ -185,3 +185,89 @@ test('★ 渲染：卡片上有 +N/−M、卡片底部有「本轮用时」与�
   }));
   assert.ok(!streaming.includes('本轮用时') && !streaming.includes('撤销本轮文件改动'));
 });
+
+/* ==================== 「比对修改」（2026-10-03）：卡片可点 + 撤销菜单 + 进度写回 ==================== */
+
+test('★ 卡片上的 +N/−M 可点（带 undoRef 时）——点开比对抽屉的入口；旧数据不假装能点', async () => {
+  const { default: TraceStrip } = await import('../src/ui/features/TraceStrip.jsx');
+  const base = {
+    kind: 'tool', state: 'done', name: 'edit_file', label: '改文件', ok: true, result: '改好了',
+    note: '完成', ms: 9, lines: { added: 1, removed: 1 },
+  };
+  const withRef = renderToStaticMarkup(h(TraceStrip, {
+    trace: Object.assign({}, base, { undoRef: { runId: 'r1', sessionId: 's1', entry: 0, paths: ['/tmp/a.md'] } }),
+  }));
+  assert.ok(withRef.includes('点击查看前后对比'), '★ 有 undoRef 的卡片要能点开对比（title 里给出提示）');
+  assert.match(withRef, /role="button"/, '渲染成可点的元素（span[role=button]，避免嵌套 button）');
+  const noRef = renderToStaticMarkup(h(TraceStrip, { trace: base }));
+  assert.ok(!noRef.includes('点击查看前后对比'), '没有 undoRef（旧会话/直调）就不假装能点');
+  assert.ok(noRef.includes('+1') && noRef.includes('−1'), '行数照常显示');
+});
+
+test('★ 撤销菜单的纯函数：文件清单（动作/行数/已恢复）与"还剩几处"——新旧两种摘要都认', async () => {
+  const { filesOf, pendingOf } = await import('../src/ui/features/UndoMenu.jsx');
+  const fresh = {
+    runId: 'r1', count: 3, undone: false, pendingCount: 2, undoneCount: 1,
+    fileList: [
+      { path: '/tmp/a.md', action: 'modify', added: 3, removed: 1, undone: false },
+      { path: '/tmp/b.md', action: 'create', added: 5, removed: 0, undone: true },
+      { path: '/tmp/c.md', action: 'delete', added: 0, removed: 4, undone: false },
+    ],
+  };
+  assert.equal(pendingOf(fresh), 2, '还剩 2 处可恢复');
+  assert.equal(filesOf(fresh).length, 3);
+  assert.equal(filesOf(fresh)[1].undone, true, '第二个文件已恢复（菜单里显示「✓ 已恢复」）');
+  assert.equal(filesOf(fresh)[2].action, 'delete', '动作随行给出（菜单显示"删除"徽标）');
+  const legacy = { runId: 'r2', count: 2, files: ['/tmp/x.md', '/tmp/y.md'], undone: false };
+  assert.equal(pendingOf(legacy), 2, '旧摘要没有 pendingCount：按"还没撤过"算');
+  assert.deepEqual(filesOf(legacy).map((f) => f.path), ['/tmp/x.md', '/tmp/y.md']);
+  assert.deepEqual(filesOf(legacy)[0], { path: '/tmp/x.md', action: 'modify', added: 0, removed: 0, undone: false },
+    '旧数据不编行数（0 就是不显示）');
+  assert.equal(pendingOf(Object.assign({}, legacy, { undone: true })), 0, '旧摘要撤过之后没有可撤的了');
+});
+
+test('★ 逐文件撤销的进度写回本地那条消息（applyUndoSummary）——按钮与菜单立刻跟上，不用刷新', async () => {
+  const { state } = await import('../src/ui/state/store.js');
+  const Run = await import('../src/ui/state/run.js');
+  const msg = { id: 'm2', role: 'assistant', content: 'x', wallMs: 1, trace: [], undo: Object.assign({}, UNDO) };
+  state.sessions = [{ id: 's1', title: 'T', ts: 1, msgs: [msg] }];
+  state.history = [msg];
+  Run.applyUndoSummary({
+    runId: 'r1', undone: false, undoneCount: 1, pendingCount: 1,
+    fileList: [
+      { path: '/tmp/a.md', action: 'modify', added: 1, removed: 1, undone: true },
+      { path: '/tmp/b.md', action: 'create', added: 2, removed: 0, undone: false },
+    ],
+    lastFailed: 0,
+  });
+  assert.equal(msg.undo.undone, false, '只恢复了一个：整轮还不算已撤销（按钮留着）');
+  assert.equal(msg.undo.pendingCount, 1);
+  assert.equal(msg.undo.fileList[0].undone, true, '★ 菜单里那行要立刻变「已恢复」');
+  Run.applyUndoSummary({ runId: 'r1', undone: true, undoneCount: 2, pendingCount: 0, fileList: [], lastFailed: 0 });
+  assert.equal(msg.undo.undone, true, '全部恢复后收尾条换成"已撤销"');
+});
+
+test('★ 比对抽屉的差异渲染：两侧文本 → 逐行差异（行号/±/统计），"之后"来源说清楚', async () => {
+  const { DiffBody } = await import('../src/ui/features/FileDiffSheet.jsx');
+  const data = {
+    path: '/tmp/a.md', scope: 'entry', action: 'modify', changes: 1, undone: false,
+    lines: { added: 1, removed: 1 },
+    before: { exists: true, source: 'journal', text: 'A\nB\nC\n' },
+    after: { exists: true, source: 'disk', text: 'A\nB2\nC\nD\n' },
+  };
+  const html = renderToStaticMarkup(h(DiffBody, { data, loading: false, error: '' }));
+  assert.ok(html.includes('+2') && html.includes('−1'), '统计要按实际行数（+2 −1），实际：' + html.slice(0, 300));
+  assert.ok(html.includes('B2') && html.includes('D'), '新增/改动的行要出现在差异里');
+  assert.ok(html.includes('当前文件'), '★ 之后来自磁盘时要写明（"之后 = 当前文件"）');
+  /* 二进制/目录/没备份：不画差异，给一句人话 */
+  const bin = renderToStaticMarkup(h(DiffBody, {
+    data: Object.assign({}, data, { before: { exists: true, source: 'journal', binary: true }, after: data.after }),
+    loading: false, error: '',
+  }));
+  assert.ok(bin.includes('二进制文件'), '二进制要说清不展示差异');
+  const missing = renderToStaticMarkup(h(DiffBody, {
+    data: Object.assign({}, data, { before: { exists: false, source: 'journal' } }),
+    loading: false, error: '',
+  }));
+  assert.ok(missing.includes('这一轮新建的'), '新建的文件要说清"之前不存在"');
+});

@@ -26,6 +26,13 @@ export const state = {
   steering: 0,             // 当前会话待消费的插话条数（界面提示用）
   hub: { connected: false, error: '' },   // 统一事件口（一条 SSE 收全部会话的运行事件）的连接状态
   downloads: { open: false, entries: [], dir: '', loading: false, error: '' },  // 「📥 待下载」目录（传输文件插件）
+  /* 「为什么选它」对话框（见 ui/features/AboutAgent.jsx）：头部与欢迎页两个入口共用 */
+  about: { open: false },
+  /* 任务清单浮层（见 state/todo.js）：data 是服务端那份清单（null = 没有/已被丢弃），open 是折叠开关 */
+  todo: { open: true, data: null, sessionId: '', loadedAt: 0 },
+  /* 「比对修改」抽屉（见 state/fileDiff.js）：两个入口共用——追踪条的 +N/−M 卡片（entry 维度）
+     与撤销菜单里的一个文件（file 维度）。files 是要对比的文件清单，index 是当前看的那个。 */
+  fileDiff: { open: false, runId: '', sessionId: '', files: [], index: 0, loading: false, error: '', restoring: false, data: null },
   status: { connected: false, checking: false, models: [], error: '', model: '' },
   agentStatus: null,       // /agent/tools/status：绑定、白名单、上限、危险清单
   ctx: { used: 0, limit: FIELDS.ctxLimit.def, pct: 0, state: 'ok' },   // 用量环（初始值 = schema 默认，拉到真实设置前先画这个）

@@ -91,7 +91,7 @@ async function errorText(r) {
 export async function* chat(cfg, messages, params, opts = {}) {
   const body = buildBody(cfg, messages, params, opts);
   const r = await upstreamChat(refOf(cfg), body, opts.signal, opts.sessionId);
-  if (!r.ok) yield { type: 'error', message: await errorText(r) };
+  if (!r.ok) yield { type: 'error', message: await errorText(r), status: r.status };
   // 流式 tool_calls 分片累积（按 index 还原分片顺序）
   const acc = new Map();   // index -> {id,name,argsStr}
   const takeCalls = () => [...acc.entries()].sort((a, b) => a[0] - b[0]).map(([i, c]) => ({
@@ -111,7 +111,21 @@ export async function* chat(cfg, messages, params, opts = {}) {
     }
     return out;
   };
-  for await (const line of sseLines(r)) {
+  /** 累积一条 delta 里的工具调用分片（按 index 还原顺序） */
+  const absorbCalls = (list) => {
+    for (const t of list) {
+      const i = t.index === undefined ? 0 : t.index;
+      const cur = acc.get(i) || { id: t.id || '', name: '', argsStr: '' };
+      if (t.id) cur.id = t.id;
+      if (t.function && t.function.name) cur.name = t.function.name;
+      if (t.function && t.function.arguments) cur.argsStr += t.function.arguments;
+      acc.set(i, cur);
+    }
+  };
+  /* 这条流的"结束形态"：见过 finish_reason 或 [DONE] = 上游**正常收尾**；
+     两者都没见过 = 半路被掐断（没有结束标记的半截响应，内核据此不当成"回答完了"）。 */
+  const meta = { sawDone: false, sawFinish: false };
+  for await (const line of sseLines(r, meta)) {
     let o; try { o = JSON.parse(line); } catch { continue; }
     if (o.error) { yield { type: 'error', message: o.error.message || JSON.stringify(o.error) }; return; }
     const ch = (o.choices || [])[0];
@@ -120,17 +134,8 @@ export async function* chat(cfg, messages, params, opts = {}) {
       const think = d.reasoning_content !== undefined ? d.reasoning_content : d.reasoning;
       if (think) yield { type: 'thinking', text: think };
       if (d.content) for (const ev of bodyEvents(split.feed(d.content))) yield ev;
-      if (d.tool_calls) {
-        for (const tc2 of d.tool_calls) {
-          const i = tc2.index === undefined ? 0 : tc2.index;
-          const cur = acc.get(i) || { id: tc2.id || '', name: '', argsStr: '' };
-          if (tc2.id) cur.id = tc2.id;
-          if (tc2.function && tc2.function.name) cur.name = tc2.function.name;
-          if (tc2.function && tc2.function.arguments) cur.argsStr += tc2.function.arguments;
-          acc.set(i, cur);
-        }
-      }
-      if (ch.finish_reason) yield { type: 'stop', reason: stopReason(ch.finish_reason) };
+      if (d.tool_calls) absorbCalls(d.tool_calls);
+      if (ch.finish_reason) { meta.sawFinish = true; yield { type: 'stop', reason: stopReason(ch.finish_reason) }; }
       if (ch.finish_reason === 'tool_calls' && acc.size) {
         yield { type: 'tool_calls', calls: takeCalls() };
         acc.clear();
@@ -144,6 +149,7 @@ export async function* chat(cfg, messages, params, opts = {}) {
   for (const ev of bodyEvents(split.flush())) yield ev;
   for (const ev of tc.flush()) yield ev;
   if (acc.size) yield { type: 'tool_calls', calls: takeCalls() };
+  yield { type: 'stream_end', clean: meta.sawFinish || meta.sawDone };
 }
 
 export const openai = {

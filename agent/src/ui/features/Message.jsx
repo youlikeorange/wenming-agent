@@ -1,15 +1,17 @@
 // Message.jsx —— 单条消息：助手 ghost 气泡（无框、整行排版）/ 用户右侧气泡（按内容收缩，≤80% 宽）
 // （思考折叠、追踪条 Marker、Markdown 正文、元信息、悬停操作；视觉规范见 styles.css 的 .marker/.shimmer）
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
-import { Bot, ChevronRight, Copy, RefreshCw, Trash2, Undo2 } from 'lucide-react';
+import { Bot, ChevronRight, Copy, RefreshCw, Trash2 } from 'lucide-react';
 import { deleteRound, regenerateLast } from '../state/session.js';
 import { undoRun } from '../state/run.js';
-import { askConfirm, hooks } from '../state/host.js';
+import { undoGateHelp } from '../state/undo-help.js';
+import { askConfirm } from '../state/host.js';
 import { Button } from '../components/ui/button.jsx';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
 import { toast } from '../components/ui/toast.jsx';
 import { cn } from '../lib/utils.js';
 import TraceStrip from './TraceStrip.jsx';
+import UndoMenu, { pendingOf } from './UndoMenu.jsx';
 import { renderMarkdownHtml } from './chat-utils.js';
 import { fmtDuration, shortPath, statsParts } from '../lib/format.js';
 
@@ -153,18 +155,8 @@ async function confirmUndo(undo) {
   }
 }
 
-/** 撤销被闸门拦下（没解锁 / 没绑定）：把用户引到该去的地方。
- *  与工具那条路同一口径——撤销要过与工具**同一套闸门**，这是设计（见 lib/agent/tools/fs.js）。 */
-function undoGateHelp(e) {
-  const p = (e && e.payload) || {};
-  if (p.needUnlock) {
-    toast(`撤销要写入文件：先解锁绑定账号 ${p.osUser || ''}（输入一次密码，只存在内存里）`, 'info');
-    hooks.onNeedUnlock(p.osUser || '');
-  } else if (p.needBind) {
-    toast('撤销要写入文件：先在设置里绑定本机账号', 'info');
-    hooks.onNeedBind();
-  } else toast('撤销失败：' + (e.message || e), 'err');
-}
+/** 撤销被闸门拦下（没解锁 / 没绑定）的引导：抽到 state/undo-help.js —— 整轮撤销、逐文件恢复、
+ *  比对抽屉三个入口共用一份（各写一份必然漂移），这里只保留调用。 */
 
 /** 运行时长（一句话，tabular-nums 让数字对齐） */
 function WallTime({ ms }) {
@@ -200,7 +192,8 @@ function footerView(msg, phase) {
   const undo = msg.undo;
   const wall = Number(msg.wallMs) || 0;
   if (msg.streaming || (!wall && !undo)) return null;
-  return { wall, undo, undone: !!(undo && undo.undone) || phase === 'done' };
+  /* "已撤销"的判据 = **没有待恢复的了**（逐文件撤销之后可能还剩几个，按钮要留着） */
+  return { wall, undo, undone: pendingOf(undo) === 0 || phase === 'done' };
 }
 
 function FooterBody({ view, phase, onClick }) {
@@ -213,29 +206,19 @@ function FooterBody({ view, phase, onClick }) {
   );
 }
 
-/** 撤销按钮：**常显**（不是悬停才出现）——用户要的是"点一下就撤"，多一步都嫌多 */
+/** 撤销按钮 = 一个下拉菜单（UndoMenu）：逐文件明细 + "点开看对比" + 底部"全部恢复"。
+ *  **常显**（不是悬停才出现）——用户要的是"点一下就撤"，多一步都嫌多。 */
 function UndoButton({ undo, phase, onClick }) {
-  const retry = undo.lastFailed ? `。上次有 ${undo.lastFailed} 处没恢复（解锁绑定账号后可以重试）` : '';
-  return (
-    <Button
-      variant="outline" size="sm"
-      className="h-6 gap-1 px-2 text-[11px]"
-      disabled={phase === 'working'}
-      title={`把这一轮改过的 ${undo.count} 个文件恢复原状（原内容备份在服务器上，关掉浏览器也在）${retry}`}
-      onClick={onClick}
-    >
-      <Undo2 className="size-3.5" />
-      {phase === 'working' ? '正在撤销…' : `撤销本轮文件改动（${undo.count} 处）`}
-    </Button>
-  );
+  return <UndoMenu undo={undo} phase={phase} onUndoAll={onClick} />;
 }
 
 /** 撤销过之后的痕迹：留在原位（刷新后也知道"这一轮已经撤过了"） */
 function UndoneNote({ undo }) {
+  const done = Number.isFinite(undo.undoneCount) ? undo.undoneCount : undo.count;
   const lines = undo.added || undo.removed ? `（原本 +${undo.added} / −${undo.removed} 行）` : '';
   return (
     <span className="tabular-nums" title={`已恢复成这一轮开始前的样子：\n${filesText(undo)}`}>
-      ↩ 已撤销 {undo.count} 处文件改动{lines}
+      ↩ 已撤销 {done} 处文件改动{lines}
     </span>
   );
 }
@@ -393,8 +376,19 @@ function Message({ msg, index, stale, isLastRound, busy }) {
  *  流式消息跟着它走就是设计意图；历史消息（streaming 已清）照旧靠浅比较免渲。
  *  旧实现把 ChatView 传的 `tick` 当"死参数"删掉（审计 C10，理由是"Message 没解构它"），
  *  恰好抽掉了唯一能让流式那条重绘的开关 —— props 里没有它，memo 却看得见它。 */
+/** 撤销进度的指纹（ChatView 计算后当 prop 传进来）。为什么必须这样：
+ *  msg 是**同一个对象**（applyUndoSummary 就地换掉 msg.undo），memo 的引用比较拦不住——
+ *  逐文件恢复之后收尾条与撤销菜单的状态会停在旧值上（真机实测：点了恢复，菜单里那行还写着"看对比"）。
+ *  指纹是最小实现：它一变，这条消息重渲染一次。 */
+export const undoRevOf = (m) => {
+  const u = m && m.undo;
+  if (!u) return '';
+  return [u.undone, u.pendingCount, u.undoneCount, u.undoneAt, u.lastFailed].join('|');
+};
+
 export default memo(Message, (a, b) => (
   a.msg === b.msg && a.index === b.index && a.stale === b.stale
   && a.isLastRound === b.isLastRound && a.busy === b.busy && a.canRetry === b.canRetry
+  && a.undoRev === b.undoRev
   && !(b.msg && b.msg.streaming)
 ));

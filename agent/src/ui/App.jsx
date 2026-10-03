@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import { useApp } from './state/store.js';
 import { hooks } from './state/host.js';
 import { openDrawer, ensureSession, updateCtx } from './state/session.js';
+import { loadTodo } from './state/todo.js';
 import Sidebar from './features/Sidebar.jsx';
 import Header from './features/Header.jsx';
 import ChatView from './features/ChatView.jsx';
@@ -14,6 +15,9 @@ import Composer from './features/Composer.jsx';
 import SettingsDrawer from './features/settings/SettingsDrawer.jsx';
 import { ConfirmDialog } from './features/ConfirmDialog.jsx';
 import { DownloadsDialog } from './features/DownloadsDialog.jsx';
+import { AboutAgentDialog } from './features/AboutAgent.jsx';
+import FileDiffSheet from './features/FileDiffSheet.jsx';
+import TodoPanel from './features/TodoPanel.jsx';
 import { LoginDialog } from './features/LoginDialog.jsx';
 import { KickedOverlay } from './features/KickedOverlay.jsx';
 import { Toaster, toast } from './components/ui/toast.jsx';
@@ -42,6 +46,10 @@ export default function App() {
   /* 换会话 / 改设置后重算一次用量环。流式期间涨的是"草稿 token"那一块，由 ContextMeter
      自己按 state.draft 现算；整轮结束再由 send() 的 finally 刷一次（不靠这个 effect）。 */
   useEffect(() => { if (st.ready) updateCtx(); }, [st.ready, st.activeSessId, st.settings]);
+
+  /* 任务清单（右上角浮层）：首次载入/换会话时向服务端要当前会话那一份
+     （运行中的实时更新走 tool_end 事件，见 state/todo.js）。 */
+  useEffect(() => { if (st.ready) loadTodo(st.activeSessId); }, [st.ready, st.activeSessId]);
 
   if (!st.ready) return <BootScreen error={st.bootError} />;
 
@@ -80,6 +88,9 @@ export default function App() {
       <SettingsDrawer />
       <ConfirmDialog />
       <DownloadsDialog />
+      <AboutAgentDialog />
+      <FileDiffSheet />
+      <TodoPanel />
       <LoginDialog open={loginOpen} onOpenChange={setLoginOpen} hint={loginHint} />
       <KickedOverlay />
       <Toaster />

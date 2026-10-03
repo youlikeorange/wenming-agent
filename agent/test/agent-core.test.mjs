@@ -5,7 +5,7 @@
  * 每条断言与中文测试名逐条对应原文件。 */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Agent } from '../src/core/agent.js';
+import { Agent, retryableError, RETRY_MAX, RETRY_WAIT_MS, NUDGE_MAX } from '../src/core/agent.js';
 
 /** 造一个假的流式模型：按脚本依次返回（每轮一个元素） */
 function fakeStream(script) {
@@ -188,7 +188,8 @@ test('场景 G3：不是中断的流错误照旧抛出去（别把真错误都�
     throw new Error('上游 500：boom');
   }
   await assert.rejects(
-    () => Agent.run({ maxRounds: 2, stream: () => boom(), getSteering: () => [] }),
+    /* retryWaitMs 调小：这类错误现在会先"等一会儿重试"（出厂 30 秒），测试里别真等 90 秒 */
+    () => Agent.run({ maxRounds: 2, stream: () => boom(), getSteering: () => [], retryWaitMs: 5 }),
     /上游 500：boom/,
     '非中断错误必须抛出',
   );
@@ -326,4 +327,158 @@ test('场景 M：trace 的结果/参数上限可注入（面板「结果与记�
   assert.ok(wide.trace[0].args.note.length < 360, '截断后有说明（实际 ' + wide.trace[0].args.note.length + '）');
   const toolMsg = seen[1].find((m) => m.role === 'tool');
   assert.equal(toolMsg.content.length, big.length, '★ 发给模型的工具结果一个字不少（上限只管记录）');
+});
+
+/* ============================================================================
+ * 2026-10-03：结束形态 / 续轮守卫 / 上游出错重试
+ *   背景：一轮真实运行在"模型刚宣布要调工具"处被上游掐断，半截回答被当成最终回答静默收尾
+ *   （用户看到"半句话停住"，没有任何说明），事后也没有任何记录能分辨发生了什么。
+ * ============================================================================ */
+
+/** 会发"结束形态"的假流：step.cut=true 时 clean=false（模拟没有结束标记的半截响应） */
+function shapeStream(steps) {
+  let i = 0;
+  return async function* () {
+    const s = steps[Math.min(i++, steps.length - 1)];
+    if (s.think) yield { type: 'thinking', text: s.think };
+    if (s.content) yield { type: 'content', text: s.content };
+    if (s.calls) yield { type: 'tool_calls', calls: s.calls };
+    if (s.stop) yield { type: 'stop', reason: s.stop };
+    yield { type: 'stream_end', clean: !s.cut };
+  };
+}
+const todoResult = (items) => ({ ok: true, text: '清单', todo: { items, total: items.length, done: items.filter((i) => i.status === 'completed').length } });
+
+test('场景 N：流被掐断（没有结束标记）→ 不当成最终回答，续一轮拿到完整回答', async () => {
+  const notices = [], shapes = [];
+  const out = await Agent.run({
+    maxRounds: 6,
+    stream: shapeStream([
+      { content: '半句话…', cut: true },       // 被掐断：没有 finish_reason / [DONE]
+      { content: '完整回答' },                  // 续的那一轮正常收尾
+    ]),
+    runTool: async () => ({ ok: true, text: 'ok' }),
+    hooks: { onNotice: (n) => notices.push(n.kind), onRoundShape: (s) => shapes.push(s) },
+  });
+  assert.equal(out.content, '半句话…完整回答', '两段都在（一个字不丢）');
+  assert.equal(out.rounds, 0, '续轮不算工具轮次');
+  assert.deepEqual(notices, ['interrupted'], '打了一条"被掐断"的提示');
+  assert.equal(shapes.length, 2, '两轮的结束形态都记了（实际 ' + shapes.length + '）');
+  assert.equal(shapes[0].clean, false, '第一轮 clean=false（被掐断）');
+  assert.equal(shapes[1].clean, true, '第二轮 clean=true');
+  assert.equal(shapes[0].text, 4, '形态里带这一轮的字数');
+});
+
+test('场景 N2：连续被掐断到上限 → 抛错（绝不静默收尾）', async () => {
+  let calls = 0;
+  await assert.rejects(() => Agent.run({
+    maxRounds: 9,
+    stream: async function* () { calls++; yield { type: 'content', text: '半截' }; yield { type: 'stream_end', clean: false }; },
+    runTool: async () => ({ ok: true, text: 'ok' }),
+  }), /掐断/, '连续被掐断要报错');
+  assert.equal(calls, NUDGE_MAX + 1, '续 ' + NUDGE_MAX + ' 次后放弃（实际调了 ' + calls + ' 次）');
+});
+
+test('场景 O：清单还有未完成项 → 收尾前提醒一次，模型继续干活', async () => {
+  const notices = [];
+  const out = await Agent.run({
+    maxRounds: 6,
+    stream: shapeStream([
+      { calls: [call('t1', 'todo_write', { items: [{ text: 'a', status: 'pending' }, { text: 'b', status: 'pending' }] })] },
+      { content: '我先收尾了' },                                     // 想收尾，但清单还剩 2 项
+      { calls: [call('t2', 'todo_write', { items: [{ text: 'a', status: 'completed' }, { text: 'b', status: 'completed' }] })] },
+      { content: '完成' },
+    ]),
+    runTool: async (c) => (c.name === 'todo_write' && c.args.items.every((i) => i.status === 'completed')
+      ? todoResult([{ text: 'a', status: 'completed' }, { text: 'b', status: 'completed' }])
+      : todoResult([{ text: 'a', status: 'pending' }, { text: 'b', status: 'pending' }])),
+    hooks: { onNotice: (n) => notices.push(n.kind) },
+  });
+  assert.equal(out.content, '我先收尾了完成', '提醒后继续跑（内容都在）');
+  assert.equal(out.rounds, 2, '工具轮次 2（实际 ' + out.rounds + '）');
+  assert.deepEqual(notices, ['todo_pending'], '打了一条清单提醒');
+});
+
+test('场景 O2：提醒到上限后照样收尾（不把收尾顶成死循环）', async () => {
+  const notices = [];
+  const out = await Agent.run({
+    maxRounds: 9,
+    stream: shapeStream([
+      { calls: [call('t1', 'todo_write', { items: [{ text: 'a', status: 'pending' }] })] },
+      { content: '就这样吧' },
+    ]),
+    runTool: async () => todoResult([{ text: 'a', status: 'pending' }]),
+    hooks: { onNotice: (n) => notices.push(n.kind) },
+  });
+  assert.equal(out.content, '就这样吧就这样吧就这样吧', '提醒两次后正常收尾（实际 ' + JSON.stringify(out.content) + '）');
+  assert.deepEqual(notices, ['todo_pending', 'todo_pending'], '只提醒 ' + NUDGE_MAX + ' 次');
+  assert.equal(out.stopped, false, '不是"停止"，是正常收尾');
+});
+
+test('场景 P：上游出错 → 等一会儿自动重试（出厂 30 秒，测试调小）', async () => {
+  const notices = [], shapes = [];
+  let n = 0;
+  const out = await Agent.run({
+    maxRounds: 6, retryWaitMs: 5,
+    stream: async function* () {
+      if (n++ === 0) throw Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+      yield { type: 'content', text: '重试后的回答' };
+      yield { type: 'stream_end', clean: true };
+    },
+    runTool: async () => ({ ok: true, text: 'ok' }),
+    hooks: { onNotice: (x) => notices.push(x.kind), onRoundShape: (s) => shapes.push(s) },
+  });
+  assert.equal(out.content, '重试后的回答', '重试拿到了回答');
+  assert.deepEqual(notices, ['upstream_retry'], '打了一条重试提示');
+  assert.equal(shapes.length, 1, '只在成功那次记形态（实际 ' + shapes.length + '）');
+  assert.equal(shapes[0].tries, 2, '这一轮试了 2 次（实际 ' + shapes[0].tries + '）');
+  assert.equal(RETRY_WAIT_MS, 30000, '出厂等待 30 秒');
+  assert.equal(RETRY_MAX, 3, '出厂最多 3 次');
+});
+
+test('场景 P2：认证类错误不重试（等 90 秒也是同一句话）', async () => {
+  let calls = 0;
+  await assert.rejects(() => Agent.run({
+    maxRounds: 6, retryWaitMs: 5,
+    stream: async function* () { calls++; yield { type: 'error', message: 'HTTP 401：invalid api key', status: 401 }; },
+    runTool: async () => ({ ok: true, text: 'ok' }),
+  }), /401/);
+  assert.equal(calls, 1, '只调了一次（没有重试，实际 ' + calls + ' 次）');
+});
+
+test('场景 P3：重试次数用尽 → 抛出（不静默），失败也留一条结束形态', async () => {
+  const shapes = [];
+  let calls = 0;
+  await assert.rejects(() => Agent.run({
+    maxRounds: 6, retryWaitMs: 5, retryMax: 1,
+    stream: async function* () { calls++; throw new Error('fetch failed'); },
+    runTool: async () => ({ ok: true, text: 'ok' }),
+    hooks: { onRoundShape: (s) => shapes.push(s) },
+  }), /fetch failed/);
+  assert.equal(calls, 2, '初次 + 1 次重试（实际 ' + calls + ' 次）');
+  assert.equal(shapes.length, 1, '失败也记一条结束形态（实际 ' + shapes.length + '）');
+  assert.equal(shapes[0].tries, 2, '形态里是真实尝试次数（实际 ' + shapes[0].tries + '）');
+  assert.equal(shapes[0].clean, false, '失败轮 clean=false');
+  assert.ok(/fetch failed/.test(shapes[0].error), '形态里带错误摘要');
+});
+
+test('场景 P4：等待重试期间点停止 → 按"已停止"收尾，不报错', async () => {
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 20);
+  const out = await Agent.run({
+    maxRounds: 6, retryWaitMs: 5000, signal: ac.signal,
+    stream: async function* () { throw new Error('ECONNRESET'); },
+    runTool: async () => ({ ok: true, text: 'ok' }),
+  });
+  assert.equal(out.stopped, true, '收成 stopped（不抛错）');
+});
+
+test('重试判据：网络 / 429 / 5xx 重试；认证与请求本身有问题的错误不重试', () => {
+  assert.equal(retryableError(new Error('read ECONNRESET')), true, '网络类');
+  assert.equal(retryableError(new Error('HTTP 429：rate limit')), true, '限流');
+  assert.equal(retryableError(new Error('HTTP 503：bad gateway')), true, '5xx');
+  assert.equal(retryableError(new Error('上游连接中断：流还没结束，连接就断了')), true, '被掐断的流');
+  assert.equal(retryableError(Object.assign(new Error('nope'), { status: 401 })), false, '认证');
+  assert.equal(retryableError(new Error('HTTP 400：context length exceeded')), false, '上下文超限');
+  assert.equal(retryableError(new Error('该服务商未填写 Base URL')), false, '配置类');
 });

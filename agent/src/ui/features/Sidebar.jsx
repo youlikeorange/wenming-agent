@@ -9,6 +9,7 @@ import { setUi } from '../state/settings.js';
 import { useImeSafe } from '../components/ui/ime-field.jsx';
 import { cn } from '../lib/utils.js';
 import { fullTime, timeAgo } from '../lib/format.js';
+import { BRAND } from '../lib/brand.js';
 import { useApp } from '../state/store.js';
 
 /* ============================ 品牌头 ============================ */
@@ -20,7 +21,7 @@ function Brand() {
         <Bot className="size-5" />
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-semibold leading-tight">智能体 Agent</span>
+        <span className="block truncate text-sm font-semibold leading-tight" title={`${BRAND.full} —— ${BRAND.tagline}`}>{BRAND.name}</span>
         <span className="block truncate text-[11px] text-subtle">记忆 · 技能 · 全参数</span>
       </span>
       <a

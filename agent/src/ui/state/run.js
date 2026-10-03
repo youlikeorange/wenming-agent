@@ -17,6 +17,7 @@
  *  人回来时用 GET /agent/run/state 找到还在跑的那几条，接上继续看。
  */
 import { state, patch, touch } from './store.js';
+import { applyTodo } from './todo.js';
 import { post, request } from '../../core/http.js';
 import { EP } from '../../core/endpoints.js';
 import { sseLines } from '../../core/protocol/sse.js';
@@ -170,6 +171,9 @@ function fillToolEnd(at, ev) {
     resultChars: ev.resultChars,
     /* 写入/删除的行数（写/改/删文件才有；服务端只在两个数非零时才给）：追踪条显示 +N / −M */
     ...(ev.lines ? { lines: ev.lines } : {}),
+    /* 改动的定位信息：点那条 +N/−M 卡片打开「比对修改」抽屉（见 state/fileDiff.js）。
+       服务端没给（旧记录 / 没有改动）就不写，卡片也就不可点。 */
+    ...(ev.undoRef ? { undoRef: ev.undoRef } : {}),
     /* 可下载文件清单（deliver_file）：追踪条上的文件卡片（原先漏了这一步——
        卡片要等重拉会话才出现，直播时看不到） */
     ...(Array.isArray(ev.files) && ev.files.length ? { files: ev.files } : {}),
@@ -211,6 +215,9 @@ const HANDLERS = {
     touchSoon();
   },
   tool_end: (ev, msg) => {
+    /* 任务清单（todo_write 的结果，见 state/todo.js）：右上角浮层据此实时更新。
+       null = 已丢弃；字段缺席 = 这次调用与清单无关（两者不能混）。 */
+    if (ev.todo !== undefined) { try { applyTodo(ev.todo, ev.sessionId); } catch { /* 不影响主流程 */ } }
     const arr = traceArr(msg);
     const at = slotFor(arr, ev, () => ({ kind: 'tool', label: ev.label, name: ev.name, ok: true, note: '', callId: ev.callId || '' }));
     if (at) fillToolEnd(at, ev);
@@ -350,6 +357,25 @@ function noteFailure(msg, error) {
   else msg.error = '请求失败：' + error;
 }
 
+/** **以服务端那份最终正文为准**（2026-10-03）：停止/失败/被掐断时，服务端会在流结束之后
+ *  往正文尾巴补一句说明（`*[已停止生成]*` / `*[请求失败：…]*`），那句从未作为增量下发过。
+ *  以前客户端只认自己拼的正文，于是：界面看不到说明，而且只要客户端回写一次会话
+ *  （整份替换），服务端那句也会被抹掉——用户看到的就只剩"半句话"。
+ *  @returns {boolean} 采纳了服务端正文 = true（说明的补写交给它，下面的兜底不用再补） */
+function adoptServerContent(msg, ev) {
+  if (typeof ev.content !== 'string' || !ev.content.length) return false;
+  msg.content = ev.content;
+  return true;
+}
+
+/** 服务端没给正文时的兜底：停止/失败各补一句说明（与 lib/agent/run-loop.js 的文案一致） */
+function ensureStopMarker(msg, ev) {
+  if (ev.status === 'error' && ev.error && !/请求失败/.test(msg.content || '')) noteFailure(msg, ev.error);
+  if (ev.status === 'stopped' && msg.content && !/\*\[已停止生成\]\*/.test(msg.content)) {
+    msg.content += '\n\n*[已停止生成]*';
+  }
+}
+
 /** 收尾时把这条消息结清：内容一律保留，停止/失败各补一句说明 */
 function finishMsg(msg, ev) {
   delete msg.streaming;
@@ -357,10 +383,7 @@ function finishMsg(msg, ev) {
   /* 本轮的文件改动摘要（服务端落盘那份的同一个对象）：界面据此画「撤销本轮文件改动」——
      关掉浏览器回来，它还在消息上（msg.undo 已随会话落盘）。没有改动时是 null，不挂。 */
   if (ev.undo) msg.undo = ev.undo;
-  if (ev.status === 'error' && ev.error) noteFailure(msg, ev.error);
-  if (ev.status === 'stopped' && msg.content && !/\*\[已停止生成\]\*/.test(msg.content)) {
-    msg.content += '\n\n*[已停止生成]*';
-  }
+  if (!adoptServerContent(msg, ev)) ensureStopMarker(msg, ev);
 }
 
 /** end 事件里"只有服务端才知道"的那几样（标题/摘要/会话记忆）写回会话对象 */
@@ -602,23 +625,56 @@ export async function stopRun(sessionId) {
 }
 
 /**
- * 一键撤销：把某一次运行的文件改动全部恢复原状。
+ * 撤销：把某一次运行的文件改动恢复原状——**默认整轮，传 paths 时只恢复这几个文件**
+ * （抽屉里与撤销菜单里的"仅恢复这一个"）。
  *
  *  请求打到服务端（原内容备份与改动日志都在**账号目录**里，不在浏览器里）；
- *  成功后服务端会把落盘那条消息标成"已撤销"（所有窗口/刷新后一致），
- *  本地这份也同步标上——不标的话，本窗口下一次整体写回会话会把"已撤销"覆盖回去。
+ *  成功后服务端会把落盘那条消息的 `undo` 进度更新掉（所有窗口/刷新后一致），
+ *  本地这份也同步（applyUndoSummary）——不同步的话，本窗口下一次整体写回会话会把它覆盖回去。
+ *  @param {string} runId
+ *  @param {string[]} [paths] 只恢复这些路径；缺省 = 整轮
  */
-export async function undoRun(runId) {
-  const d = await post(EP.runUndo, { id: String(runId || '') }, { timeoutMs: 120000 });
-  /* 服务端说"全部恢复了"才标已撤销（部分失败时它会留着按钮让人重试，本地不能自作主张） */
-  if (d && d.marked !== false) {
-    for (const sess of state.sessions) {
-      const msg = (sess.msgs || []).find((m) => m && m.undo && m.undo.runId === runId);
-      if (msg) { msg.undo.undone = true; msg.undo.undoneAt = d.undoneAt || Date.now(); }
-    }
-    touch();
-  }
+export async function undoRun(runId, paths) {
+  const body = { id: String(runId || '') };
+  if (Array.isArray(paths) && paths.length) body.paths = paths.map(String);
+  const d = await post(EP.runUndo, body, { timeoutMs: 120000 });
+  /* 服务端同步过进度（marked）才写回本地；一处都没恢复时它不同步，本地也不能自作主张 */
+  if (d && d.marked !== false) applyUndoSummary(d.summary, d);
   return d;
+}
+
+/** 服务端摘要 → 进度字段（undoneAt 为 0 时不带，保持本地已有的那个值）。
+ *  别把局部变量叫 patch：本模块顶部就导入了 store 的 patch（no-shadow）。 */
+function undoProgressPatch(summary) {
+  const rec = {
+    undone: !!summary.undone,
+    undoneCount: summary.undoneCount, pendingCount: summary.pendingCount,
+    fileList: summary.fileList, lastFailed: summary.lastFailed,
+  };
+  if (summary.undoneAt) rec.undoneAt = summary.undoneAt;
+  return rec;
+}
+
+/** 更新一条消息的 undo 进度：有完整 summary 用它的；没有（精简响应）按旧语义标全恢复 */
+function applyOneUndo(msg, summary, d) {
+  if (!summary) {
+    msg.undo.undone = true;
+    msg.undo.undoneAt = (d && d.undoneAt) || Date.now();
+    return;
+  }
+  msg.undo = Object.assign({}, msg.undo, undoProgressPatch(summary));
+}
+
+/** 把服务端的撤销进度（summary = undo.summaryOf 的形状）写回本地那份 msg.undo。
+ *  逐个文件撤销之后，按钮文案、菜单里每行的"已恢复"、收尾条都靠它立刻跟上。 */
+export function applyUndoSummary(summary, d) {
+  const runId = String((summary && summary.runId) || (d && d.runId) || '');
+  if (!runId) return;
+  for (const sess of state.sessions) {
+    const msg = (sess.msgs || []).find((m) => m && m.undo && m.undo.runId === runId);
+    if (msg) applyOneUndo(msg, summary, d);
+  }
+  touch();
 }
 
 /** 子智能体的完整转录（界面展开看"它到底做了什么"）；失败回 null。 */

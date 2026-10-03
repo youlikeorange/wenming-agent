@@ -7,9 +7,11 @@ import { openDrawer } from '../state/session.js';
 import { compactNow, uncompact } from '../state/settings.js';
 import { hooks } from '../state/host.js';
 import { patch, useApp } from '../state/store.js';
+import { BRAND, HIGHLIGHTS, TOP_HIGHLIGHTS } from '../lib/brand.js';
+import { Highlight, openAbout } from './AboutAgent.jsx';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
 import JumpButton from './JumpButton.jsx';
-import Message from './Message.jsx';
+import Message, { undoRevOf } from './Message.jsx';
 import SessionOutline from './SessionOutline.jsx';
 import { handleCodeCopy, requestScrollBottom, takeScrollBottom } from './chat-utils.js';
 
@@ -22,23 +24,38 @@ const SUGGESTIONS = [
   { icon: Brain, text: '记住：我的时区是 Asia/Shanghai，涉及时间时按这个算' },
 ];
 
-/** 空状态：品牌标记 + 一句话 + 三个可点的建议 chips（底下保留「打 / 用模板」与「生成中回车 = 插话」两条提示） */
+/** 空状态：品牌（名字 + 定位 + 卖点）+ 三个可点的建议 chips（底下保留「打 / 用模板」与「生成中回车 = 插话」两条提示） */
 function EmptyState() {
   const { revision } = useApp();   // 订阅快照：内置搜索开关一变，下面的 chips 跟着换
   const suggestions = useMemo(
     () => { void revision; return SUGGESTIONS.filter((s) => !s.needSearch || Prompts.enabled('skill.web_search')); },
     [revision]);
   return (
-    <div className="rise flex flex-col items-center gap-4 px-6 py-16 text-center">
+    <div className="rise flex flex-col items-center gap-5 px-6 py-14 text-center">
       <span className="grid size-12 place-items-center rounded-2xl bg-muted text-muted-foreground">
         <Bot className="size-6" />
       </span>
       <div className="space-y-1.5">
-        <p className="text-base font-medium">开始对话</p>
-        <p className="mx-auto max-w-md text-xs leading-relaxed text-muted-foreground">
-          这是一个 Agent：模型会自己决定要不要查文件、联网搜索、记事情、加载技能。
+        <p className="text-lg font-semibold leading-tight">
+          {BRAND.name}
+          <span className="ml-2 align-middle text-[11px] font-normal text-subtle">{BRAND.tagline}</span>
         </p>
+        <p className="mx-auto max-w-xl text-xs leading-relaxed text-muted-foreground">{BRAND.oneLiner}</p>
       </div>
+
+      {/* 卖点：首页只摆"第一梯队"的几条（其余在「为什么选它」对话框里） */}
+      <div className="grid w-full max-w-2xl gap-2 text-left sm:grid-cols-2">
+        {TOP_HIGHLIGHTS.map((h) => <Highlight key={h.title} h={h} />)}
+      </div>
+      <button
+        type="button"
+        onClick={openAbout}
+        className="text-[11px] text-primary underline decoration-dotted underline-offset-2"
+        title="名字、定位与全部卖点（和其他 Agent 的差别）"
+      >
+        为什么选它 · 全部 {HIGHLIGHTS.length} 条
+      </button>
+
       <div className="flex flex-wrap items-center justify-center gap-2">
         {suggestions.map((s) => (
           <button
@@ -158,6 +175,9 @@ export default function ChatView() {
                   stale={!!(m.streaming && !st.streaming)}
                   isLastRound={i === lastAssistant}
                   busy={!!st.streaming}
+                  /* 撤销进度的指纹：msg 是同一对象，memo 拦得住引用比较 —— 逐文件恢复后
+                     收尾条/菜单要立刻变，靠这个 prop 触发重渲染（见 Message.jsx 的 undoRevOf） */
+                  undoRev={undoRevOf(m)}
                 />
               ))}
             </>

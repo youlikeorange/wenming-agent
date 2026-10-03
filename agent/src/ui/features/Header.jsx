@@ -1,9 +1,11 @@
 // Header.jsx —— 顶栏：折叠侧栏、标题与连接状态、上下文用量环、最近一轮统计、访问级别徽章与操作按钮
-import { FolderGit2, PackageOpen, PanelLeft, Settings, Trash2, Undo2, UserRound } from 'lucide-react';
+import { FolderGit2, Info, PackageOpen, PanelLeft, Settings, Trash2, Undo2, UserRound } from 'lucide-react';
 import { AgentPolicy } from '../../core/policy.js';
 import { activeProvider, accessOf, hooks, askConfirm } from '../state/host.js';
 import { clearChat, openDrawer, undoLast } from '../state/session.js';
 import { openDownloads } from '../state/downloads.js';
+import { openAbout } from './AboutAgent.jsx';
+import { BRAND } from '../lib/brand.js';
 import { patch, useApp } from '../state/store.js';
 import { cn } from '../lib/utils.js';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../components/ui/dropdown-menu.jsx';
@@ -108,9 +110,17 @@ export default function Header({ sidebarCollapsed, onToggleSidebar, phone }) {
         <PanelLeft className="size-4" />
       </IconBtn>
 
-      <div className="min-w-0">
-        <div className="truncate text-[13px] font-semibold leading-tight">智能体 Agent</div>
-        <StatusLine status={status} provider={provider} />
+      <div className="flex min-w-0 items-center gap-1">
+        <div className="min-w-0">
+          <div className="truncate text-[13px] font-semibold leading-tight" title={BRAND.full + ' —— ' + BRAND.tagline}>
+            {BRAND.name}
+          </div>
+          <StatusLine status={status} provider={provider} />
+        </div>
+        {/* 「为什么选它」：名字旁边一个小入口，任何时刻都能看它和别人比好在哪（文案在 lib/brand.js） */}
+        <IconBtn title={`${BRAND.name} 是什么、为什么选它`} onClick={openAbout} className="size-6">
+          <Info className="size-3.5" />
+        </IconBtn>
       </div>
 
       {/* 当前项目：一眼看出"现在这轮对话属于哪个项目"（点它进设置 → 项目） */}

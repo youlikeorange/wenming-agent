@@ -177,7 +177,10 @@ export function createToolRunner() {
     const clean = stripBadArgs(args);
     let d = {};
     try {
-      d = await post(EP.toolsCall, { name, args: clean, limits: pluginLimits(), grant: grant || undefined },
+      /* sessionId：服务端按它定位"这份任务清单属于哪条对话"（todo_write 要用；
+         其余工具忽略它）。托管运行那条路不用它——会话 id 在服务端上下文里。 */
+      const sessId = (() => { try { const s = C.curSess && C.curSess(); return s && s.id; } catch { return ''; } })();
+      d = await post(EP.toolsCall, { name, args: clean, limits: pluginLimits(), grant: grant || undefined, sessionId: sessId || undefined },
         /* 超时要**比服务端硬超时（AGENT_EXEC_MAX_SEC，默认 600s）更长**：客户端先断的话命令
            还在服务端跑着，模型却拿到"请求失败"、输出也丢了（旧值 300s 对不上，2026-09-19 审计修正）。
            再并上本轮的 run signal：用户点「停止」要能立刻掐断在途的工具调用，否则界面要一直
@@ -208,7 +211,21 @@ export function createToolRunner() {
       /* 写入/删除的行数（写/改/删文件时服务端给的）：同样原样上传，
          追踪条（信息卡片）据此显示 +N / −M（内核 asResult 的白名单里也有它） */
       lines: d.lines && (d.lines.added || d.lines.removed) ? d.lines : undefined,
+      /* 改动的定位信息（哪一轮/日志里第几条/动了哪些路径）：点 +N/−M 卡片打开「比对修改」
+         抽屉时用它向服务端取两侧内容。只带定位、不带内容（内核 asResult 里也放行了它）。 */
+      undoRef: d.undoRef && typeof d.undoRef === 'object' ? d.undoRef : undefined,
+      /* 任务清单（todo_write 的结果）：null = 已丢弃。同样往上传（内核 asResult 里也放行）。 */
+      todo: d.todo !== undefined ? d.todo : undefined,
     };
+  }
+
+  /** 任务清单（todo_write）：走服务端存（按账号与会话），**不占文件/命令预算**——
+   *  它是"记录进度"不是文件操作；就算模型一轮里多调几次，兜底还有 maxRounds（轮次上限），
+   *  不存在"把预算烧光"的风险。没登录就用不了（服务端要按账号落盘）。 */
+  async function runTodoTool(args) {
+    if (!C.AGENT_API) return { ok: false, note: '未接入', text: '当前没有接入站点后端：任务清单要用服务端存储。' };
+    if (!C.me()) return { ok: false, note: '需要登录', text: C.Prompts.text('plugin.need_login') };
+    return await callAgentTool('todo_write', args);
   }
 
   /** skill_import 的失败出口：把服务端的分类错误翻成模型看得懂的话（与插件工具同一套口径） */
@@ -541,6 +558,7 @@ export function createToolRunner() {
     const args = call.args || {};
     if (name === 'web_search') return runSearch(args, userText, budget);
     if (name === 'spawn_agent') return runSubAgentTool(call, budget);
+    if (name === 'todo_write') return runTodoTool(args);
     if (SKILL_TOOL_NAMES.has(name)) return runSkillTool(name, args, budget);
     if (MEMORY_TOOL_NAMES.has(name)) return runMemoryTool(name, args, budget);
     if (C.AgentDefs.PLUGIN_TOOL_NAMES.has(name)) return runPluginTool(name, args, budget);

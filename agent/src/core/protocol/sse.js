@@ -51,11 +51,14 @@ export function blockData(block) {
   return data;
 }
 
-/** 逐条 data 载荷（OpenAI 风格：每块一个 JSON，[DONE] 结束） */
-export async function* sseLines(res) {
+/** 逐条 data 载荷（OpenAI 风格：每块一个 JSON，[DONE] 结束）
+ *  @param {{sawDone?: boolean}} [meta] 结束时回填"这条流见过 `[DONE]` 吗"——
+ *         协议适配器据此判断上游是**正常收尾**还是**半路被掐断**（2026-10-03 加）。 */
+export async function* sseLines(res, meta) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
+  const markDone = () => { if (meta) meta.sawDone = true; };
   try {
     for (;;) {
       const { done, value } = await readChunk(reader);
@@ -67,7 +70,7 @@ export async function* sseLines(res) {
       for (const block of blocks) {
         const d = blockData(block);
         if (!d) continue;
-        if (d.trim() === '[DONE]') return;
+        if (d.trim() === '[DONE]') { markDone(); return; }
         yield d;
       }
       if (!hadBlock && buf.includes('\n')) {
@@ -77,7 +80,7 @@ export async function* sseLines(res) {
         for (const raw of parts) {
           const d = blockData(raw);
           if (!d) continue;
-          if (d.trim() === '[DONE]') return;
+          if (d.trim() === '[DONE]') { markDone(); return; }
           yield d;
         }
       }
@@ -85,6 +88,7 @@ export async function* sseLines(res) {
     // 收尾：剩下的最后一帧照样吐出来（常常正是带 stop_reason 的那一帧）
     const d = blockData(buf);
     if (d && d.trim() !== '[DONE]') yield d;
+    else if (d.trim() === '[DONE]') markDone();
   } finally {
     // 退出时释放读端（空闲超时 / 用户停止时尤其重要：不 cancel 连接一直挂着）
     try { reader.cancel().catch(() => {}); } catch { /* 已断开 */ }
