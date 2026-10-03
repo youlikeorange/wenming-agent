@@ -55,6 +55,11 @@
 
 - 测试 198 → **217** 个用例（新增参数归一、记忆写回、设置归一化、大纲等回归）；
   eslint / jscpd / madge 三道静态检查口径不变。
+- **发布守卫 `tools/deps-check.mjs`**：从入口 `standalone.js` 顺着相对依赖走一遍，
+  缺文件就拦住提交/发布（`sync.sh` 提交前、`restore.sh` 回滚后各跑一次）。
+  这一版的第一次同步就靠它抓出真问题：站点新增的宿主公共件 `lib/paths.js`、`lib/ids.js`
+  不在同步清单里，仓库那一版 `node standalone.js` 直接 `Cannot find module './paths'`——
+  本版已补齐并加了检查。经验：**依赖清单漏文件，git 不会报错，只有真起一次才知道**。
 - 本版同步范围：`agent/`（含构建产物）、`lib/agent/`、`public/llm-chat/` 与宿主依赖留档。
 - 内部审计记录（`AUDIT*.md`、`BUGFIX-*.md`）继续**不入库**，只留本机。
 
