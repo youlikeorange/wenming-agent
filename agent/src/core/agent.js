@@ -130,7 +130,10 @@ const traceCap = (cfg) => {
 const REPEAT_OK = new Set(['read_file', 'list_directory', 'directory_tree', 'search_files',
   'get_file_info', 'web_search', 'memory_search', 'memory_read', 'memory_write', 'memory_forget',
   'list_skills', 'use_skill',
-  'write_file', 'edit_file', 'create_directory', 'move_file']);
+  'write_file', 'edit_file', 'create_directory', 'move_file',
+  /* wait 必须豁免：轮询长任务就是"连续多次等同样长的时间"，
+     相同参数是常态而不是空转（次数由它自己的预算管，不靠重复保护）。 */
+  'wait']);
 const repeatAllowed = (name) => REPEAT_OK.has(String(name || ''));
 
 /** 注入项可以是纯文本（当作用户消息）或完整的 {role, content} 消息 */
@@ -232,10 +235,13 @@ function sleepAbortable(ms, signal) {
 async function readRound(cfg, messages, H) {
   const out = { content: '', thinking: '', stats: null, stop: '', sig: '', redacted: '', calls: [],
     recovered: false, stopped: false, clean: true, tries: 1 };
+  /* 生成耗时的两个时间点（第一个增量 / 最后一个增量）：tok/s 的分母，见读流之后的注释 */
+  let tFirst = 0, tLast = 0;
+  const tick = () => { const now = Date.now(); if (!tFirst) tFirst = now; tLast = now; };
   try {
     for await (const ev of cfg.stream(messages, cfg.opts || {}, cfg.signal)) {
-      if (ev.type === 'content') { out.content += ev.text; call(H.onDelta, { type: 'content', text: ev.text }); }
-      else if (ev.type === 'thinking') { out.thinking += ev.text; call(H.onDelta, { type: 'thinking', text: ev.text }); }
+      if (ev.type === 'content') { tick(); out.content += ev.text; call(H.onDelta, { type: 'content', text: ev.text }); }
+      else if (ev.type === 'thinking') { tick(); out.thinking += ev.text; call(H.onDelta, { type: 'thinking', text: ev.text }); }
       else if (ev.type === 'thinking_sig') { out.sig += ev.text; }
       else if (ev.type === 'thinking_redacted') { out.redacted += ev.text; }
       else if (ev.type === 'tool_calls') { out.calls.push(...ev.calls); if (ev.recovered) out.recovered = true; }
@@ -256,6 +262,12 @@ async function readRound(cfg, messages, H) {
     if (!isAbort(e, cfg.signal)) throw e;
     out.stopped = true;
   }
+  /* **生成耗时（gen_ms）= 第一个增量 → 最后一个增量**，tok/s 的分母只能是它。
+     上游（OpenAI 兼容）只给 token 数、不给时长；拿"这一轮的 wallMs"当分母会把排队、
+     首字节延迟、以及**工具执行**全算进去——用户实测一轮 8 tokens 跑了 30 秒（含两次工具调用），
+     右上角显示成 0.3 tok/s，显然不是模型的速度。只有一个增量时量不出窗口，就不写 gen_ms
+     （界面据此**不显示** tok/s，而不是编一个数）。 */
+  if (out.stats && tLast > tFirst) out.stats = Object.assign({}, out.stats, { gen_ms: tLast - tFirst });
   out.cut = out.clean === false;             // 被掐断（协议没给结束标记）——守卫①据此判定
   return out;
 }

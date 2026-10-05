@@ -286,7 +286,7 @@ function stubFetch(handler) {
   return { seen, restore: () => { globalThis.fetch = orig; } };
 }
 
-const baseBudget = () => ({ search: 0, aux: 0, fs: 0, exec: 0, maxSearch: 3, maxAux: 8, maxFs: 12, maxExec: 6 });
+const baseBudget = () => ({ search: 0, aux: 0, fs: 0, exec: 0, wait: 0, maxSearch: 3, maxAux: 8, maxFs: 12, maxExec: 6, maxWait: 12 });
 
 /** 会话 / 项目 / 全局记忆的假实现（ToolRunner 用到 write/search/find/remove/listOf/scopeCn/projectMeta） */
 function fakeMemory(hasProject = false) {
@@ -566,12 +566,12 @@ test('ToolRunner：pluginLimits 把面板限额随每次调用下发', () => {
   initRunner({
     val2: (k) => ({
       plugin_fs_read_kb: 128, plugin_fs_write_kb: 512, plugin_fs_nodes: 300,
-      plugin_exec_out_kb: 32, plugin_exec_timeout: 30,
+      plugin_exec_out_kb: 32, plugin_exec_timeout: 30, plugin_wait_sec: 120,
     })[k],
   });
   assert.deepEqual(ToolRunner.pluginLimits(),
-    { read_kb: 128, write_kb: 512, nodes: 300, out_kb: 32, timeout_sec: 30 },
-    '五项限额都来自 val2（服务端再按硬上限收敛一次）');
+    { read_kb: 128, write_kb: 512, nodes: 300, out_kb: 32, timeout_sec: 30, wait_sec: 120 },
+    '六项限额都来自 val2（服务端再按硬上限收敛一次）');
 });
 
 test('ToolRunner：联网搜索走同源代理，401 时给模型明确的话', async () => {
@@ -750,4 +750,45 @@ test('★ asResult 保留可下载文件清单（界面据此画卡片），但�
   assert.equal(result.length, 1, '一次工具调用一条追踪记录');
   assert.equal(result[0].files && result[0].files[0].name, '报告.md', '★ files 要活着（实际 ' + JSON.stringify(result[0].files) + '）');
   assert.equal(result[0].files[0].恶意字段, undefined, '白名单外的字段一律丢掉（工具参数不可信）');
+});
+
+/* ---------- wait 工具（长任务"提交后台 → 等待 → 查进度"的中间步） ---------- */
+
+test('AgentDefs：wait 跟命令行同一个开关（plugin_exec_on），在插件族里但无需串行', () => {
+  initDefs({ val2: valMap({ plugin_exec_on: false }) });
+  assert.ok(!namesOf(AgentDefs.pluginToolDefs()).includes('wait'), '关掉命令行 → wait 一并 deregister');
+  assert.ok(AgentDefs.PLUGIN_TOOL_NAMES.has('wait'), 'wait 在插件族里（同一套登录/绑定闸门）');
+  assert.ok(!AgentDefs.CONFIRM_SEQUENTIAL.has('wait'), '等待不碰任何东西，无需串行');
+  initDefs();
+  assert.ok(namesOf(AgentDefs.pluginToolDefs()).includes('wait'), '默认（命令行开着）→ wait 注册');
+  const def = AgentDefs.pluginToolDefs().find((d) => d.function.name === 'wait');
+  assert.deepEqual(def.function.parameters.required, ['seconds'], '参数只要 seconds');
+});
+
+test('ToolRunner：wait 不占命令/文件预算，扣自己的等待预算', async () => {
+  const { budget } = initRunner();
+  const stub = stubFetch(() => jsonRes(200, { ok: true, note: '等待', text: '已等待 1 秒。' }));
+  try {
+    const r = await ToolRunner.runTool({ name: 'wait', args: { seconds: 1 } }, '', budget);
+    assert.equal(r.ok, true, '服务端返回成功 → ok:true');
+    assert.equal(budget.exec, 0, '不占命令预算');
+    assert.equal(budget.fs, 0, '不占文件预算');
+    assert.equal(budget.wait, 1, '扣的是等待预算（maxWait）');
+  } finally { stub.restore(); }
+});
+
+test('ToolRunner：等待次数用尽 → loop.budget_wait 文案（不是 fs/exec 的那几句）', async () => {
+  const { budget } = initRunner();
+  budget.wait = budget.maxWait;
+  const r = await ToolRunner.runTool({ name: 'wait', args: { seconds: 1 } }, '', budget);
+  assert.equal(r.ok, false, '预算用尽 → ok:false');
+  assert.equal(r.note, '已达上限', 'note=已达上限');
+  assert.ok(r.text.includes('等待次数已达上限'), '文本来自 loop.budget_wait');
+  assert.ok(r.text.includes('稍后再来问我进度'), '并指回"提交后稍后再问"这条出路');
+});
+
+test('ToolRunner：关掉命令行开关 → wait 一并停用（同一开关）', async () => {
+  const { budget } = initRunner({ val2: valMap({ plugin_exec_on: false }) });
+  const r = await ToolRunner.runTool({ name: 'wait', args: { seconds: 1 } }, '', budget);
+  assert.equal(r.note, '已停用', '跟着命令行走同一个开关');
 });

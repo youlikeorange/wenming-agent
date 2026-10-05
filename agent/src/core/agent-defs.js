@@ -44,7 +44,9 @@ const FS_DELETE_NAMES = ['delete_path'];
    但它**不是**写文件工具（不改用户磁盘上的东西，只往账号自己的下载目录拷一份），
    所以不进 FS_WRITE_NAMES（不弹"写文件"确认框），也不进 FS_READ_NAMES（它确实创建了文件，扣 fs 预算）。 */
 const DELIVER_NAMES = ['deliver_file'];
-const PLUGIN_TOOL_NAMES = new Set(FS_READ_NAMES.concat(FS_WRITE_NAMES, FS_DELETE_NAMES, ['run_command'], DELIVER_NAMES));
+/* wait（长任务里"等一段时间再查"）跟着命令行走同一个开关（plugin_exec_on）：
+   它不改任何东西，但只有配合"提交后台任务 → 等待 → 查进度"才有意义，单独存在只会诱导空转。 */
+const PLUGIN_TOOL_NAMES = new Set(FS_READ_NAMES.concat(FS_WRITE_NAMES, FS_DELETE_NAMES, ['run_command', 'wait'], DELIVER_NAMES));
 /* 会弹确认框、且会改动东西的工具：串行执行（agent.js 里"写类工具宜 sequential"）。
    一来它们都要过同一个确认框（并行会抢同一个弹框），
    二来两条命令/一次写入本来也不该同时动同一份东西。只读类照旧并行。 */
@@ -226,6 +228,13 @@ export function createAgentDefs() {
     }, ['command']));
   }
 
+  /** 等待：长任务"提交后台 → 等一段时间 → 查进度"的中间那步。原地延时，不占命令条数。 */
+  function WAIT_TOOL_SPEC() {
+    return fn('wait', 'tool.wait.schema.desc', p({
+      seconds: { type: 'number', description: '要等多久（秒）。不超过面板里的「单次等待上限」，超了按上限算' },
+    }, ['seconds']));
+  }
+
   /** 本轮插件闸门：要**已登录**（文件与命令行都以"登录的那个系统账号"身份执行，没登录就没有身份，
    *  服务端本来也会 401）**且已绑定本机账号**（bound() 为真；登录只说明"是谁"，绑定才说明
    *  "这台机器上的哪个账号可以代他执行"）。两者差一个都不给插件工具。 */
@@ -276,7 +285,7 @@ export function createAgentDefs() {
       if (val2('plugin_fs_write')) FS_WRITE_NAMES.forEach((n) => out.push(T[n]));
       if (val2('plugin_fs_delete')) FS_DELETE_NAMES.forEach((n) => out.push(T[n]));
     }
-    if (val2('plugin_exec_on')) out.push(EXEC_TOOL_SPEC());
+    if (val2('plugin_exec_on')) { out.push(EXEC_TOOL_SPEC()); out.push(WAIT_TOOL_SPEC()); }
     if (val2('plugin_deliver_on')) out.push(DELIVER_TOOL_SPEC());
     return out;
   }

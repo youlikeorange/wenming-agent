@@ -81,6 +81,7 @@ export function createToolRunner() {
     nodes: Number(C.val2('plugin_fs_nodes')) || undefined,
     out_kb: Number(C.val2('plugin_exec_out_kb')) || undefined,
     timeout_sec: Number(C.val2('plugin_exec_timeout')) || undefined,
+    wait_sec: Number(C.val2('plugin_wait_sec')) || undefined,
   });
 
   /** 去掉参数里的 __badArgs / __raw 标记（providers.js 的解析失败标记，只给内核看） */
@@ -478,12 +479,21 @@ export function createToolRunner() {
   async function runPluginTool(name, args, budget) {
     if (!C.AGENT_API) return { ok: false, note: '未接入后端', text: '当前没有接入站点后端，插件工具不可用。' };
     const isCmd = name === 'run_command';
+    const isWait = name === 'wait';       // 跟命令行同一个开关（plugin_exec_on）
     // 用户在面板里关掉了这一类插件：两类工具回同一句话（只差开关名）
-    if (!C.val2(isCmd ? 'plugin_exec_on' : 'plugin_fs_on')) {
+    if (!C.val2(isCmd || isWait ? 'plugin_exec_on' : 'plugin_fs_on')) {
       return { ok: false, note: '已停用', text: C.Prompts.text('loop.plugin_off').replace(/\{name\}/g, name) };
     }
     // 未登录：插件工具整体不可用。这里挡在最前面，一是别让它白扣预算，二是给模型一句明确的理由。
     if (!C.me()) return { ok: false, note: '需要登录', text: C.Prompts.text('plugin.need_login') };
+
+    /* 等待：不改任何东西、不需要确认、不占 fs/命令预算——它有自己的次数上限
+       （面板「单轮等待上限」）；单次秒数由服务端按面板「单次等待上限」收敛。 */
+    if (isWait) {
+      const bt = takeBudget(budget, 'wait', 'maxWait', 'loop.budget_wait');
+      if (bt) return bt;
+      return await callAgentTool(name, args);
+    }
 
     // 要不要先问：访问级别定档；命令再看一眼允许清单（清单在非"完全访问"档都生效）
     const isDel = name === 'delete_path';

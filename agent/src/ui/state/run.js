@@ -380,6 +380,8 @@ function ensureStopMarker(msg, ev) {
 function finishMsg(msg, ev) {
   delete msg.streaming;
   if (Number.isFinite(ev.ms)) msg.wallMs = ev.ms;
+  /* 用量（tokens / gen_ms）：服务端在 end 里一并交回，tok/s 立刻更新（不用等重拉会话） */
+  if (ev.stats) msg.stats = ev.stats;
   /* 本轮的文件改动摘要（服务端落盘那份的同一个对象）：界面据此画「撤销本轮文件改动」——
      关掉浏览器回来，它还在消息上（msg.undo 已随会话落盘）。没有改动时是 null，不挂。 */
   if (ev.undo) msg.undo = ev.undo;

@@ -157,10 +157,13 @@ export default function ChatView() {
 
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
-      <div ref={scrollRef} onClick={handleCodeCopy} className="scroll-fade-y min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        {/* 与输入框同一套内边距、同样拉满主区：两者左右边界严格对齐。
-            旧的 max-w-3xl / 52rem 居中列在宽屏下和输入框错开十几个像素，看着就是"没对齐"。 */}
-        <div className="flex w-full flex-col px-3 py-4 sm:px-4" style={{ gap: 'var(--msg-gap)' }}>
+      <div ref={scrollRef} onClick={handleCodeCopy}
+        className="chat-gutter scroll-fade-y min-h-0 flex-1 overscroll-contain">
+        {/* 与输入框**共用同一个列宽**（.chat-col：桌面视图两边各留 --chat-pad；宽度只有一份，见 styles.css）：
+            两者左右边界严格对齐——旧实现各写一个 max-w-3xl，宽屏下错开十几像素，看着就是"没对齐"。
+            留白在**列自己**身上（不在容器上）：两边都从同一个 --chat-pad 出，改一处两边一起变。
+            留白只在 ≥768px 生效（手机视图列直接占满，用户 2026-10-05）。 */}
+        <div className="chat-col flex flex-col py-4" style={{ gap: 'var(--msg-gap)' }}>
           {hist.length ? (
             <>
               <CompactionNotice sess={sess} />

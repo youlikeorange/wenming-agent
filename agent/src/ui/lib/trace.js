@@ -1,4 +1,4 @@
-/* ui/lib/trace.js —— 追踪条条目的**纯函数**：规范化、分类、收尾合并（可在 Node 下单测）
+/* ui/lib/trace.js —— 追踪条条目的**纯函数**：规范化、分类、收尾合并、折叠摘要（可在 Node 下单测）
  *
  *  为什么单独一个模块：追踪条条目的字段语义原先靠**中文文案**当判据——
  *  TraceStrip 用 `t.note === '进行中'` 判断在跑、用 `t.note === '插话'` 判断插话，
@@ -44,6 +44,76 @@ export function normalizeTrace(t) {
  *  工具条换成内核那份（按 label 对齐，保持先后顺序）。
  *  （原实现内联在 session.js 的 send() 里，用 note === '插话' 过滤，见文件头注释。）
  */
+/* ==================== 折叠摘要（features/TraceGroup.jsx 用） ==================== */
+
+/* 工具名 → 摘要里的短名。认不出的名字退回标签里「：」前的那一段（labelOf 生成的标签都是
+   「读文件：/tmp/a」这种形状），再退回原始工具名——**绝不为了归类丢掉信息**。 */
+const TOOL_SHORT = {
+  read_file: '读文件', list_directory: '列目录', directory_tree: '目录树', search_files: '找文件', get_file_info: '文件属性',
+  write_file: '写文件', edit_file: '改文件', create_directory: '建目录', move_file: '移动', delete_path: '删除',
+  run_command: '命令', web_search: '搜索', deliver_file: '传给用户', wait: '等待',
+  use_skill: '加载技能', list_skills: '技能列表', skill_import: '导入技能', skill_write: '写技能', skill_delete: '删技能',
+  memory_write: '记记忆', memory_search: '查记忆', memory_read: '读记忆', memory_forget: '忘记忆',
+  todo_write: '任务清单', spawn_agent: '子智能体',
+};
+/* 非工具类条目的类别名（与 TOOL_SHORT 共用一个计数表，摘要里按同一口径分类） */
+const KIND_SHORT = { sub: '子智能体', steer: '插话', notice: '提示', compact: '压缩' };
+
+/** 一条追踪条在折叠摘要里的短名 */
+export function shortToolName(name, label) {
+  const n = String(name || '');
+  if (TOOL_SHORT[n]) return TOOL_SHORT[n];
+  const head = String(label || '').split(/[：:]/)[0].trim();
+  return head || n || '工具';
+}
+
+/**
+ * 一轮里的全部追踪条 → 折叠摘要（一行能看懂的计数；界面只负责画，口径在这里、可单测）。
+ *
+ *  返回 { count, running, failed, ms, changed, added, removed, groups }：
+ *   · count   总条数；running 还在跑的（state）；failed 失败的（ok === false，含错误提示条）；
+ *   · ms      各步耗时之和——**不是**墙钟时间，并行执行时会大于实际用时，界面写"累计"；
+ *   · changed 有改动行数的条目数（added/removed 是它俩各自的和）：改动明细折叠起来，
+ *             但"改了几处、多少行"要在摘要里报出来，否则折叠等于把这件事藏了；
+ *   · groups  分类计数 [{ label, count }]：工具按短名归类（读文件 ×3），其余按类别；
+ *             按条数从多到少排，同数按首次出现的先后（顺序稳定，不会随重渲染跳）。
+ */
+export function summarizeTraces(list) {
+  const arr = (Array.isArray(list) ? list : []).filter(Boolean);
+  const out = { count: arr.length, running: 0, failed: 0, ms: 0, changed: 0, added: 0, removed: 0, groups: [] };
+  const byLabel = new Map();
+  for (const t of arr) tally(out, byLabel, t);
+  out.groups = out.groups
+    .sort((a, b) => b.count - a.count || a.at - b.at)
+    .map((g) => ({ label: g.label, count: g.count }));
+  return out;
+}
+
+/** 把一条追踪条记进摘要（各项计数 + 分类计数）；分类表按 label 去重，`at` 记首次出现的次序 */
+function tally(out, byLabel, t) {
+  if (traceRunning(t)) out.running += 1;
+  if (t.ok === false) out.failed += 1;
+  const ms = Number(t.ms);
+  if (Number.isFinite(ms) && ms > 0) out.ms += ms;
+  const l = linesOf(t.lines);
+  if (l.added || l.removed) { out.changed += 1; out.added += l.added; out.removed += l.removed; }
+  const kind = traceKind(t);
+  const label = kind === 'tool' ? shortToolName(t.name, t.label) : (KIND_SHORT[kind] || '其它');
+  const hit = byLabel.get(label);
+  if (hit) hit.count += 1;
+  else { const g = { label, count: 1, at: out.groups.length }; byLabel.set(label, g); out.groups.push(g); }
+}
+
+/** 一条追踪条记的改动行数（负数/NaN 一律当 0）。
+ *  唯一一份口径：TraceStrip 的 DiffChip 与折叠摘要的 ✎ 计数都走它。 */
+export function linesOf(lines) {
+  const l = lines || {};
+  return {
+    added: Math.max(0, Math.floor(Number(l.added) || 0)),
+    removed: Math.max(0, Math.floor(Number(l.removed) || 0)),
+  };
+}
+
 export function mergeTrace(live, core, steering) {
   const l = (Array.isArray(live) ? live : []).map(normalizeTrace);
   const c = (Array.isArray(core) ? core : []).map(normalizeTrace);

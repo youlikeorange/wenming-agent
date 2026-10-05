@@ -136,6 +136,11 @@ export const TOOL_FIELDS = {
   plugin_exec_out_kb: { label: '输出上限（命令输出与工具结果）', group: 'exec', kind: 'number', def: 16, min: 1, step: 1, unit: 'KB',
     tip: 'stdout+stderr 各自的上限，超出截断（并注明已截断）；同一上限也作用于**所有工具结果**——'
       + '读大文件时截到它（服务端硬上限在下面「结果与记录」里说明）。' },
+  plugin_wait_sec: { label: '单次等待上限', group: 'exec', kind: 'number', def: 300, min: 1, max: 1800, step: 10, unit: '秒',
+    tip: 'wait 工具一次最多等多久（长任务"提交后台 → 等待 → 查进度"里那一步）。'
+      + '服务端硬上限默认 1800 秒（AGENT_WAIT_MAX_SEC 可抬），这里只能更小。' },
+  plugin_wait_max: { label: '单轮等待上限', group: 'exec', kind: 'number', def: 12, min: 1, step: 1,
+    tip: '一轮里最多等几次（wait 与命令条数分开算）。单次上限 × 次数就是一轮能自主等待的总时长。' },
   /* ---- 结果与记录：一条工具结果"记多少、留多少"（原先全部硬编码 4000，用户撞到就说不出话） ---- */
   record_trace_chars: { label: '追踪条单条结果上限', group: 'record', kind: 'number', def: 4000, min: 500, max: 200000, step: 500, unit: '字',
     tip: '工具结果写进追踪条/会话记录的字数上限——读到一篇长文档时，截断的就是它。'

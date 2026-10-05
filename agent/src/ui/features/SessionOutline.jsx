@@ -115,13 +115,14 @@ function OutlineLine({ it, current, onJump }) {
   );
 }
 
-/** 桌面轨：贴着消息区右缘的一列横线（等距，条数多时由 CSS 自动压缩间距） */
+/** 桌面轨：贴消息区右缘的一列横线（等距，条数多时由 CSS 自动压缩间距）。
+ *  定位在 styles.css 的 .ol-rail（列几乎占满面板时没地方放在列外，就还贴右缘）。 */
 function OutlineRail({ items, cur, onJump }) {
   return (
     <nav
       aria-label="会话大纲：跳转到某一轮提问"
       data-ol-rail
-      className="pointer-events-none absolute right-2.5 top-1/2 z-10 -translate-y-1/2"
+      className="ol-rail pointer-events-none absolute top-1/2 z-10 -translate-y-1/2"
     >
       <div
         className="pointer-events-auto flex flex-col items-end"

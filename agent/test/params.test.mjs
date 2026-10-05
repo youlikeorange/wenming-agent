@@ -116,6 +116,8 @@ test('normalizeValue()：range / number 越界夹紧、非法值回落', () => {
   assert.equal(normalizeValue(TOOL_FIELDS.plugin_fs_max, 0), 1, 'number 低于 min=1 夹回 1');
   assert.equal(normalizeValue(TOOL_FIELDS.plugin_fs_max, ''), '', '空串保持空串（不当作 0）');
   assert.equal(normalizeValue(TOOL_FIELDS.plugin_fs_max, 'abc'), '', '非数字 → 空值');
+  assert.equal(normalizeValue(TOOL_FIELDS.plugin_wait_sec, 9999), 1800, '等待单次上限有 max（对齐服务端硬上限 1800）');
+  assert.equal(normalizeValue(TOOL_FIELDS.plugin_wait_sec, 0), 1, '等待单次上限低于 min=1 夹回 1');
 });
 
 test('normalizeValue()：switch / select / list 的形状收敛', () => {

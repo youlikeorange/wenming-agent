@@ -1,5 +1,5 @@
 // Message.jsx —— 单条消息：助手 ghost 气泡（无框、整行排版）/ 用户右侧气泡（按内容收缩，≤80% 宽）
-// （思考折叠、追踪条 Marker、Markdown 正文、元信息、悬停操作；视觉规范见 styles.css 的 .marker/.shimmer）
+// （思考折叠、操作折叠组 TraceGroup、Markdown 正文、元信息、悬停操作；视觉规范见 styles.css 的 .marker/.shimmer）
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { Bot, ChevronRight, Copy, RefreshCw, Trash2 } from 'lucide-react';
 import { deleteRound, regenerateLast } from '../state/session.js';
@@ -10,7 +10,7 @@ import { Button } from '../components/ui/button.jsx';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
 import { toast } from '../components/ui/toast.jsx';
 import { cn } from '../lib/utils.js';
-import TraceStrip from './TraceStrip.jsx';
+import TraceGroup from './TraceGroup.jsx';
 import UndoMenu, { pendingOf } from './UndoMenu.jsx';
 import { renderMarkdownHtml } from './chat-utils.js';
 import { fmtDuration, shortPath, statsParts } from '../lib/format.js';
@@ -329,7 +329,8 @@ function Message({ msg, index, stale, isLastRound, busy }) {
       </span>
       <div className="flex min-w-0 flex-1 flex-col gap-1.5">
         <Thinking text={msg.thinking} streaming={!!msg.streaming} />
-        {(msg.trace || []).map((t, i) => <TraceStrip key={`${i}-${t.label || t.name || ''}`} trace={t} />)}
+        {/* 这一轮的全部操作收成一组（折叠时一行摘要；进行中自动展开、失败不收起，见 TraceGroup.jsx） */}
+        <TraceGroup traces={msg.trace} streaming={!!msg.streaming} />
         {pending ? (
           <div className="marker" role="status">
             <span className="shimmer text-xs">正在思考…</span>

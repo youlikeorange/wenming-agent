@@ -138,7 +138,7 @@ function SessionItem({ s, activeId, projectName, editingId, title, setTitle, sta
       onDoubleClick={() => startRename(s)}
       onKeyDown={(e) => { if (e.key === 'Enter') { selectSession(s.id); if (onNavigate) onNavigate(); } }}
       className={cn(
-        'group/sess flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors',
+        'group/sess sidebar-lead flex cursor-pointer items-center gap-1.5 rounded-md px-2 py-1.5 transition-colors',
         s.id === activeId
           ? 'bg-accent text-accent-foreground'
           : 'text-muted-foreground hover:bg-muted hover:text-foreground',
@@ -147,8 +147,8 @@ function SessionItem({ s, activeId, projectName, editingId, title, setTitle, sta
       {/* 正在生成的小标：多会话并行时，一眼看出"哪几条在跑"（切过去就能接着看） */}
       {running ? <Spinner size="sm" title="正在生成回答" /> : null}
       <span className="min-w-0 flex-1">
-        <span className="block truncate">{s.title || '新对话'}</span>
-        <span className="block truncate text-[10.5px] text-subtle" title={fullTime(s.ts)}>
+        <span data-side="sess-title" className="block truncate">{s.title || '新对话'}</span>
+        <span data-side="sess-meta" className="sidebar-sub block truncate text-subtle" title={fullTime(s.ts)}>
           {running ? '正在生成…' : timeAgo(s.ts)}{!running && rounds(s) ? ` · ${rounds(s)} 轮` : ''}{projectName ? ` · ${projectName}` : ''}
         </span>
       </span>
@@ -227,7 +227,7 @@ function SessionList({ sessions, activeId, projects, currentProjectId, groupBy, 
               type="button"
               onClick={() => toggle(g.key)}
               title={g.hint || g.label}
-              className="flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-subtle transition-colors hover:bg-muted/60 hover:text-muted-foreground"
+              className="sidebar-sub flex w-full items-center gap-1 rounded-md px-1.5 py-1 text-subtle transition-colors hover:bg-muted/60 hover:text-muted-foreground"
             >
               {collapsed.has(g.key) ? <ChevronRight className="size-3.5 shrink-0" /> : <ChevronDown className="size-3.5 shrink-0" />}
               {g.key.startsWith('p:') ? <FolderGit2 className="size-3.5 shrink-0" /> : null}
@@ -271,8 +271,8 @@ function ProjectCard({ project }) {
       >
         <FolderGit2 className="size-4 shrink-0 text-subtle" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium">未选择项目</span>
-          <span className="block truncate font-mono text-[11px] text-subtle">点这里选一个目录作为项目根</span>
+          <span data-side="proj-name" className="sidebar-lead block truncate font-medium">未选择项目</span>
+          <span className="sidebar-sub block truncate font-mono text-subtle">点这里选一个目录作为项目根</span>
         </span>
       </button>
     );
@@ -287,10 +287,10 @@ function ProjectCard({ project }) {
       >
         <FolderGit2 className="size-4 shrink-0 text-subtle" />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium">{project.name}</span>
-          <span className="block truncate font-mono text-[11px] text-subtle">{project.root}</span>
+          <span data-side="proj-name" className="sidebar-lead block truncate font-medium">{project.name}</span>
+          <span className="sidebar-sub block truncate font-mono text-subtle">{project.root}</span>
         </span>
-        <span className="shrink-0 text-[11px] text-subtle">{project.memoryCount || 0} 条记忆</span>
+        <span className="sidebar-sub shrink-0 text-subtle">{project.memoryCount || 0} 条记忆</span>
       </button>
       <button
         type="button"

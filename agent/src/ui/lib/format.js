@@ -104,7 +104,12 @@ export function statsParts(stats, wallMs, content) {
   const out = [];
   if (stats && stats.eval_count) {
     const n = stats.eval_count;
-    const secs = stats.eval_duration ? stats.eval_duration / 1e9 : (wallMs ? wallMs / 1000 : 0);
+    /* tok/s 的分母只能是**生成耗时**：优先内核实测的 gen_ms（第一个增量 → 最后一个增量，
+       见 core/agent.js 的 readRound），其次上游给的 eval_duration（Ollama 那类会带）。
+       两个都没有就**不显示 tok/s**——旧实现回落到整轮 wallMs，把排队、首字节、工具执行全算进去，
+       实测一轮 8 tokens 跑了 30 秒（含两次工具调用）显示成 0.3 tok/s，那是假数不是速度。 */
+    const secs = Number(stats.gen_ms) > 0 ? Number(stats.gen_ms) / 1000
+      : (Number(stats.eval_duration) > 0 ? Number(stats.eval_duration) / 1e9 : 0);
     if (secs > 0.05) out.push(`${(n / secs).toFixed(1)} tok/s`);
     out.push(`${n} tokens`);
     if (stats.prompt_eval_count) out.push(`prompt ${stats.prompt_eval_count}`);

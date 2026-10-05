@@ -482,3 +482,58 @@ test('重试判据：网络 / 429 / 5xx 重试；认证与请求本身有问题�
   assert.equal(retryableError(new Error('HTTP 400：context length exceeded')), false, '上下文超限');
   assert.equal(retryableError(new Error('该服务商未填写 Base URL')), false, '配置类');
 });
+
+/* ==================== 生成耗时 gen_ms（tok/s 的分母，2026-10-04 用户报"右上角 0.3 tok/s"） ==================== */
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('★ gen_ms：只算"第一个增量 → 最后一个增量"，工具执行与排队不进分母', async () => {
+  const t0 = Date.now();
+  const out = await Agent.run({
+    maxRounds: 6,
+    stream: (() => {
+      let round = 0;
+      return async function* () {
+        round++;
+        if (round === 1) {                       // 第一轮：立刻要调工具
+          yield { type: 'tool_calls', calls: [call('t1', 'read_file', { path: '/tmp/a' })] };
+          yield { type: 'stop', reason: 'tool_calls' };
+          return;
+        }
+        yield { type: 'content', text: '一' };    // 第二轮：逐字吐，中间各停 100ms
+        await sleepMs(100);
+        yield { type: 'content', text: '二' };
+        await sleepMs(100);
+        yield { type: 'content', text: '三' };
+        yield { type: 'stats', raw: { eval_count: 3, prompt_eval_count: 10 } };
+        yield { type: 'stop', reason: 'stop' };
+      };
+    })(),
+    getSteering: () => [],
+    getFollowUps: () => [],
+    runTool: async () => { await sleepMs(300); return { ok: true, text: '文件内容' }; },   // 工具很慢
+  });
+  const elapsed = Date.now() - t0;
+  assert.equal(out.stats.eval_count, 3, 'usage 原样带出来');
+  assert.ok(out.stats.gen_ms >= 120 && out.stats.gen_ms <= 450,
+    'gen_ms ≈ 两个 100ms 间隔（实际 ' + out.stats.gen_ms + 'ms）');
+  assert.ok(elapsed >= 450, '整轮确实跑了 500ms 上下（含 300ms 工具），实际 ' + elapsed + 'ms');
+  assert.ok(out.stats.gen_ms < elapsed - 150,
+    '★ 分母里没有工具时间：gen_ms ' + out.stats.gen_ms + 'ms 远小于整轮 ' + elapsed + 'ms');
+});
+
+test('gen_ms：只有一个增量时量不出窗口 → 不写这个字段（界面据此不显示 tok/s，不编数）', async () => {
+  const out = await Agent.run({
+    maxRounds: 2,
+    stream: async function* () {
+      yield { type: 'content', text: '一次给完整段' };
+      yield { type: 'stats', raw: { eval_count: 6, prompt_eval_count: 3 } };
+      yield { type: 'stop', reason: 'stop' };
+    },
+    getSteering: () => [],
+    getFollowUps: () => [],
+    runTool: async () => ({ ok: true, text: '' }),
+  });
+  assert.equal(out.stats.eval_count, 6);
+  assert.equal(out.stats.gen_ms, undefined, '没有生成窗口就不写 gen_ms');
+});

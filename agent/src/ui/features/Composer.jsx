@@ -174,10 +174,11 @@ export default function Composer() {
     : [];
 
   return (
-    <div className="shrink-0 border-t border-border bg-background px-3 pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:px-4">
-      {/* 宽度：外层内边距与消息列完全一致，内层直接拉满 —— 输入框的边框正好压在消息列的
-          左右边界上（旧实现内外两层各有一个 max-w-3xl 居中列，宽屏下与消息列错开十几像素）。 */}
-      <div ref={boxRef} className="relative w-full">
+    <div className="chat-gutter shrink-0 border-t border-border bg-background pt-2.5 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+      {/* 宽度：与消息列**共用 .chat-col**（桌面视图两边留白、手机视图占满，见 styles.css），内边距也一致 ——
+          输入框的边框正好压在消息列的左右边界上（旧实现内外两层各有一个 max-w-3xl 居中列，
+          宽屏下与消息列错开十几像素）。 */}
+      <div ref={boxRef} className="chat-col relative">
         {tplOpen ? (
           <div className="absolute bottom-full left-0 z-30 mb-2 max-h-72 w-full overflow-y-auto rounded-lg border border-border bg-card p-1 shadow-lg">
             <p className="px-2 py-1 text-[10.5px] text-subtle">提示词模板（内容在设置 → 提示词里改）</p>

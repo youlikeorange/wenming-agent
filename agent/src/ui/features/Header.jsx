@@ -77,13 +77,14 @@ export default function Header({ sidebarCollapsed, onToggleSidebar, phone }) {
   const status = st.status || {};
   const provider = activeProvider();
 
-  /* 最近一轮的 tok/s 与 tokens：取最后一条带 stats 的回答（stats 缺失时不显示） */
+  /* 最近一轮的 tok/s 与 tokens：取最后一条带 stats 的回答（stats 缺失时不显示）。
+     不传 wallMs：这里只要"速度"与"用了多少 token"两个数（整轮用时在消息底部的收尾条里写）。 */
   let last = null;
   for (let k = (st.history || []).length - 1; k >= 0; k--) {
     const m = st.history[k];
     if (m.role === 'assistant' && m.stats) { last = m; break; }
   }
-  const stats = last ? statsParts(last.stats, last.wallMs, null).slice(0, 2) : [];
+  const stats = last ? statsParts(last.stats, null, null).slice(0, 2) : [];
 
   const undo = async () => {
     const text = await undoLast();

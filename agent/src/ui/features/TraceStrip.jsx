@@ -4,7 +4,7 @@ import { ChevronDown, Download } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
 import { Spinner } from '../components/ui/spinner.jsx';
 import { cn } from '../lib/utils.js';
-import { traceKind, traceRunning } from '../lib/trace.js';
+import { linesOf, traceKind, traceRunning } from '../lib/trace.js';
 import { subagentRecord } from '../state/run.js';
 import { downloadUrl } from '../state/downloads.js';
 import { openFileDiff } from '../state/fileDiff.js';
@@ -46,9 +46,6 @@ function metaText(t, running, failed) {
 /** 标题前缀（插话与子智能体各有一个小标记，类型一目了然） */
 const prefixOf = (t) => (isSteer(t) ? '💬 ' : isSub(t) ? '👥 ' : '');
 
-/** 行数取值（负数/NaN 一律当 0） */
-const lineCount = (v) => Math.max(0, Math.floor(Number(v) || 0));
-
 /** 打开「比对修改」抽屉并带定位（点击与键盘两处共用一份载荷） */
 const openDiffOf = (undoRef) => openFileDiff({
   runId: undoRef.runId, sessionId: undoRef.sessionId,
@@ -59,10 +56,10 @@ const openDiffOf = (undoRef) => openFileDiff({
  *  服务端在工具执行前后各拍一次快照比出来的（见 lib/agent/undo.js），随结果一路传到这条卡片上。
  *  绿色 +N = 写入的行、红色 −M = 删除的行；两个都是 0 就不画。
  *  **可点**（带 undoRef 时）：打开「比对修改」抽屉看这个文件 之前/之后 的逐行差异。
- *  点击要 stopPropagation：外层是展开/收起追踪条的触发器，点这里不该连带展开详情。 */
+ *  点击要 stopPropagation：外层是展开/收起追踪条的触发器，点这里不该连带展开详情。
+ *  行数的口径（负数当 0、非数字当 0）与折叠摘要的 ✎ 计数共用 lib/trace.js 的 linesOf。 */
 function DiffChip({ lines, undoRef }) {
-  const added = lineCount(lines && lines.added);
-  const removed = lineCount(lines && lines.removed);
+  const { added, removed } = linesOf(lines);
   if (!added && !removed) return null;
   const num = (v, cls, sign) => (v ? <span className={cls}>{sign}{fmtCount(v)}</span> : null);
   const body = (
@@ -74,7 +71,7 @@ function DiffChip({ lines, undoRef }) {
     </>
   );
   if (!undoRef) {
-    return <span className="shrink-0 text-[11px] tabular-nums" title={`这次改动：写入 ${fmtCount(added)} 行、删除 ${fmtCount(removed)} 行`}>{body}</span>;
+    return <span className="shrink-0 text-xs tabular-nums" title={`这次改动：写入 ${fmtCount(added)} 行、删除 ${fmtCount(removed)} 行`}>{body}</span>;
   }
   /* role=button 的 span（不是 <button>）：这一行外层就是 CollapsibleTrigger（本身是 button），
      嵌套 button 是非法 HTML。点击要 stopPropagation——否则会连带展开/收起追踪条。 */
@@ -82,7 +79,7 @@ function DiffChip({ lines, undoRef }) {
     <span
       role="button"
       tabIndex={0}
-      className="shrink-0 cursor-pointer rounded px-1 text-[11px] tabular-nums transition-colors hover:bg-muted"
+      className="shrink-0 cursor-pointer rounded px-1 text-xs tabular-nums transition-colors hover:bg-muted"
       title={`这次改动：写入 ${fmtCount(added)} 行、删除 ${fmtCount(removed)} 行\n点击查看前后对比`}
       onClick={(e) => { e.stopPropagation(); openDiffOf(undoRef); }}
       onKeyDown={(e) => {
@@ -113,7 +110,7 @@ function Head({ t }) {
       {running ? null : <DiffChip lines={t.lines} undoRef={t.undoRef} />}
       {meta ? (
         <span title={charsOf(t).truncated ? `只显示前 ${fmtCount(charsOf(t).shown)} 字，模型实际收到 ${fmtCount(charsOf(t).total)} 字` : undefined}
-          className={cn('shrink-0 text-[11px] tabular-nums', failed ? 'text-destructive' : 'text-subtle')}>{meta}</span>
+          className={cn('shrink-0 text-xs tabular-nums', failed ? 'text-destructive' : 'text-subtle')}>{meta}</span>
       ) : null}
     </>
   );
@@ -129,8 +126,8 @@ function FileCards({ files }) {
       {list.map((f) => (
         <div key={f.name} className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1.5">
           <span className="min-w-0 flex-1">
-            <span className="block truncate font-sans text-xs text-foreground" title={f.name}>{f.name}</span>
-            <span className="block text-[10.5px] tabular-nums text-subtle">
+            <span className="block truncate font-sans text-sm text-foreground" title={f.name}>{f.name}</span>
+            <span className="block text-xs tabular-nums text-subtle">
               {fmtBytes(f.size || 0)}
               {f.exec ? ' · 可执行文件：已打包成 zip' : f.packaged ? ' · zip 包' : ''}
             </span>
@@ -233,7 +230,7 @@ export default function TraceStrip({ trace }) {
 
   if (!hasDetail) {
     return (
-      <div className="marker" role={running ? 'status' : undefined}>
+      <div className="marker trace-row" role={running ? 'status' : undefined}>
         <Head t={t} />
       </div>
     );
@@ -245,7 +242,7 @@ export default function TraceStrip({ trace }) {
     <Collapsible
       open={open}
       onOpenChange={setOpen}
-      className="marker flex-wrap"
+      className="marker trace-row flex-wrap"
       role={running ? 'status' : undefined}
     >
       <CollapsibleTrigger

@@ -331,11 +331,14 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 | 加一个**设置项** | 设置分区组件 + `ui/state/settings.js` 动作 | `core/params.js`（如果是生成参数） | 若是 provider 字段：`settingsForSave()`（`host.js:133`）**白名单** + `sanitize.js` | 前端白名单漏了 = "界面改了存不下来"（踩过：`sessionHeader`） |
 | 调**内设上限**（追踪条字数、压缩输入、写入/目录树条数……） | — | `core/params.js` 的 `TOOL_FIELDS` 加一条（组 `record` / `subagent` / `fs`） | 服务端硬上限在 `lib/agent/limits.js` 的 `LIMITS`（环境变量可抬） | **默认值只在 schema 写一次**；每处消费都必须 `val2('<key>')`（`params.test.mjs` 会扫源码核键名）；追踪条上限的五个消费点见 §10 |
 | 改**会话/消息结构** | `ui/state/session.js`、`Message.jsx` | `core/sessions.js`、`core/assemble.js` | `store.js` 的 `sanitizeSession/sanitizeMsg`（白名单） | 新字段要在 sanitize 里放行，否则落盘即丢 |
-| 改**改动行数 / 一键撤销** | `TraceStrip.jsx` 的 `DiffChip`、`Message.jsx` 的 `RunFooter`/`confirmUndo`、`ui/state/run.js` 的 `fillToolEnd`/`undoRun` | `core/agent.js` 的 `asResult`/`asLines`（trace 也带 `lines`）、`core/tool-runner.js`（**别漏这一层**：它转发 `lines`/`files`） | `undo.js`（日志/快照/恢复）、`tools/index.js` 的 `callTool`（唯一执行入口，包 `undo.wrap`）、`run-bridge.js`（带 `run` 上下文）、`run-loop.js` 收尾（`live.undo`）、`run-http.js` 的 `/undo`、`store.js` 白名单 | 行数/撤销摘要的字段链路有**六跳**，任何一跳漏了就是"真机看不到"（`lines` 曾在 `tool-runner.js` 被吞掉，单测抓到的）；撤销走与工具同一套闸门，没解锁时一个文件都不动且**不标已撤销** |
+| 改**操作折叠组**（一轮的全部操作收成一行摘要） | `features/TraceGroup.jsx`（组头摘要 + 展开后的逐条导轨）、`features/TraceStrip.jsx`（逐条怎么画）、`ui/lib/trace.js` 的 `summarizeTraces`/`shortToolName`/`linesOf` | — | — | **不设例外：失败/改动/文件卡片全在折叠里**（几步失败、几处改动由摘要如实报）；字号与正文一致（1rem，`styles.css` 的 `.trace-group-head`/`.trace-row`）；进行中自动展开、跑完自动收起（跑完有失败则不收）；只有一条时不折；真机回归 `../test/trace-group-ui-check.mjs`（39 项，含假上游真跑一轮） |
+| 改**改动行数 / 一键撤销** | `TraceStrip.jsx` 的 `DiffChip`（在折叠组里，展开后才露出来）、`Message.jsx` 的 `RunFooter`/`confirmUndo`、`ui/state/run.js` 的 `fillToolEnd`/`undoRun` | `core/agent.js` 的 `asResult`/`asLines`（trace 也带 `lines`）、`core/tool-runner.js`（**别漏这一层**：它转发 `lines`/`files`） | `undo.js`（日志/快照/恢复）、`tools/index.js` 的 `callTool`（唯一执行入口，包 `undo.wrap`）、`run-bridge.js`（带 `run` 上下文）、`run-loop.js` 收尾（`live.undo`）、`run-http.js` 的 `/undo`、`store.js` 白名单 | 行数/撤销摘要的字段链路有**六跳**，任何一跳漏了就是"真机看不到"（`lines` 曾在 `tool-runner.js` 被吞掉，单测抓到的）；撤销走与工具同一套闸门，没解锁时一个文件都不动且**不标已撤销**；`test/undo-ui-check.mjs` 断言行数卡片前会先展开操作组 |
 | 改**技能编辑 UI** | `PromptsSection.jsx`（② 组） | — | — | 只有这一处编辑器；写入口用 `updateSkill`（技能）或 `set`（覆盖） |
 | 改**提示词保存链路** | `ui/state/host.js`（Prompts.onChange） | `core/prompts.js`（notify/serialize） | `index.js` store 路由 + `store.putPrompts` + `sanitize.prompts` | 托管运行那条订阅（`run-loop.js:83`）要跟着改，且**必须退订** |
-| 改**用量/压缩** | `ContextMeter.jsx`、`ui/state/settings.js` 的 `compactNow/uncompact` | `core/context.js` | — | 压缩提示词在登记表 `compact.*` |
+| 改**用量/压缩** | `ContextMeter.jsx`、`Header.jsx`（右上角 tok/s）、`ui/state/settings.js` 的 `compactNow/uncompact` | `core/context.js`、**`core/agent.js` 的 `readRound`（`gen_ms` = 第一个增量 → 最后一个增量）** | `run-loop.js` 的 finish（`end` 事件带 `stats`） | tok/s 的分母只能是**生成耗时**：旧实现回落到整轮 wallMs（含工具执行），一轮 8 tokens 显示成 0.3 tok/s（2026-10-04 用户报的）；口径在 `ui/lib/format.js` 的 `statsParts`（gen_ms → eval_duration → 都没有就不显示） |
 | 改**侧栏/分组** | `Sidebar.jsx`、`ui/state/session.js` | `core/sessions.js` 的 `titleFrom` | — | 会话分组是纯客户端（`settings.ui`） |
+| 改**侧栏字号**（会话名 / 项目信息） | `styles.css` 的 `.sidebar-lead`（1.07rem）/ `.sidebar-sub`（0.86rem）、`features/Sidebar.jsx`（会话条目、项目卡、项目分组头；名字上挂了 `data-side` 供检查脚本量字号） | — | — | 用户 2026-10-04 要求"比正文稍大即可"（正文 1rem）；真机回归 `../test/chat-column-ui-check.mjs` 里那三条字号断言 |
+| 改**对话列宽度 / 两边留白** | `styles.css` 的 `--chat-pad`（左 10px）/ `--chat-pad-right`（右 20px）/ `.chat-col` / `.chat-gutter`（消息区与输入框**共用这一份**）、`features/ChatView.jsx`、`features/Composer.jsx`、`features/SessionOutline.jsx`（`.ol-rail`） | — | — | 只改这两个变量（右侧比左侧宽是用户 2026-10-04 明确要的；想收窄阅读宽度就加 `max-width`）；**留白只作用桌面视图**：`.chat-col` 的宽度/外边距整条包在 `@media (min-width: 768px)` 里，手机（≤767px，与 `useIsPhone` 同断点）列占满面板、两侧只剩滚动条沟槽（用户 2026-10-05 指出；此前没加媒体查询，手机视图也一起缩了 10px/20px）；**两边各写一个宽度就会错开十几像素**（2026-10-01 的老坑）；**两个容器都要 `.chat-gutter`**（`scrollbar-gutter: stable both-edges`），只留一侧会让列偏左或让两个容器边界差 9px；真机回归 `../test/chat-column-ui-check.mjs`（19 项，含手机视口"列 = 容器内容盒"） |
 | 改**会话大纲**（按提问跳转的导航） | `SessionOutline.jsx`（桌面导轨 / 手机浮标 + 底部列表）、`components/ui/sheet.jsx`（`side="bottom"`） | — | — | 两种布局**共用** `buildItems` / `useCurrent` / `jumpTo`，只换外壳；真机回归 `../test/outline-ui-check.mjs`（桌面）+ `../test/outline-phone-ui-check.mjs`（手机视口） |
 
 构建与交付：
@@ -410,12 +413,19 @@ npm run check     # 上述一起跑
    `evaluate` 里的 `element.click()`；Radix 弹层退场动画会卡住（`data-scroll-locked`/`pointer-events:none`
    残留）→ 刷新页面重来，**不要手删 React 拥有的节点**（会整树卸载）；截图可能过期 → 以 DOM 读值为准。
    IAB 还不派发 resize / MediaQuery change（宽窗口会被判成手机版）→ **手机视图只能拿真实 Chrome + CDP 验**。
-5. **真实 Chrome + CDP 的 UI 检查**（仓库根 `test/*-ui-check.mjs`）两条硬要求：
+5. **真实 Chrome + CDP 的 UI 检查**（仓库根 `test/*-ui-check.mjs`）三条硬要求：
    - **要看悬停就必须带 `--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4`**：
      无头 Chrome 自报触屏（hover:none），Tailwind 的 `hover:` 整段失效；而 `Emulation.setEmulatedMedia`
      自 **Chrome 153 起已静默失效**（不报错、matchMedia 照旧 hover:none）。手机视图的检查反而**不要**加它。
    - **脚本收尾必须 `Page.navigate about:blank`**：presence 每 5 秒心跳续期，留着一个开着页面的窗口，
      下一个跑检查的窗口会被它顶掉——`z-[120]` 冻结层吞掉全部鼠标/触摸事件（症状像"功能整个坏了"）。
+   - **要"真跑一轮"就得有个假上游**：出站只允许公网（`lib/upstream-http.js`），本机假上游只能绑在
+     本机的**公网 IPv6** 上（`test/trace-group-ui-check.mjs` 就是这么做的，没有公网 IPv6 时那段跳过）。
+   - **用真实鼠标坐标的脚本要先"占稳窗口"**：单窗口占用（`lib/agent/presence.js`）的租约
+     **STALE_MS=75 秒**，上一跑若没来得及发 leave（页面被导航走时那个请求可能丢），这一跑会被
+     顶掉并弹出 `z-[120]` 冻结层——**真实鼠标事件全被它吞掉**，症状是悬停/点击全不生效而几何
+     断言照过（2026-10-04 在 `outline-ui-check.mjs` 上查了半天：冷启动第一跑 6/16、第二跑全绿）。
+     解法见该脚本的 `settlePresence()`：点「在此窗口继续」抢回占用权，并等到冻结层不再出现。
 6. **提交前**：`npm run check`（lint + 预算 + 重复块 + 模块环 + 测试）。
 
 ---
@@ -442,6 +452,7 @@ npm run check     # 上述一起跑
 | `record_compact_chars`（结果与记录）· 压缩输入单条 | 4000 | `core/context.js` summarize（经注入的 `val2`） | — |
 | `subagent_steps`（子智能体）· 转录保留几步 | 200 | `run-subagent.js` 的 `transcript.steps` | 内存（run.subs，结束保留 10 分钟） |
 | `plugin_fs_read_kb` / `plugin_fs_write_kb` / `plugin_exec_out_kb` / `plugin_fs_nodes` / `plugin_exec_timeout` | 64KB / 4MB / 16KB / 800 / 60s | 客户端 `tool-runner.js` 的 `pluginLimits()` → 服务端 `limits.js` 的 `effLimits()`（**只能收紧**） | `LIMITS`（环境变量 `AGENT_READ_MAX_BYTES` / `AGENT_WRITE_MAX_BYTES` / `AGENT_OUTPUT_MAX_BYTES` / `AGENT_TREE_MAX_NODES` / `AGENT_EXEC_MAX_SEC`；面板上写明。**本站 `up.sh` 已把输出硬顶设为 512KB**——抬硬顶 ≠ 自动生效，面板值仍要自己调） |
+| `plugin_wait_sec` / `plugin_wait_max`（命令行组）· **wait 工具**（长任务"提交后台 → 等待 → 查进度"那一步，2026-10-05） | 300 秒 / 12 次 | 单次上限：`pluginLimits()`（`wait_sec`）→ `effLimits()` → `tools/wait.js`；次数：`run-loop.js` 的 `roundBudget`（**计入轮次上限**）、子智能体 `run-subagent.js` 的 `subBudget`（跟写开关：允许写默认 4、只读 0）；提示词政策在 `plugin.exec.usage` 的 ② 等待 | `LIMITS.waitSec`（环境变量 `AGENT_WAIT_MAX_SEC`，默认 1800 秒）；**wait 跟 `plugin_exec_on` 同一个开关**；托管运行里点「停止」立即打断等待（`wait.js` 的 `delay` 监听 `run.abort`）；相同参数连等不触发重复保护（`agent.js` 的 `REPEAT_OK`） |
 | `ctxLimit`（上下文与扩展）· 用量环分母 | 1000000 | `core/params.js` 的 `FIELDS.ctxLimit` → `ctxLimitOf()`（参数 > 服务商 > 出厂默认）；`ui/state/store.js` 与 `ContextMeter.jsx` 的初始占位直接读 schema | `sanitize.js` 把服务商级 ctxLimit 夹到 2^24；**只影响用量环与自动压缩阈值，不发给模型** |
 | 子智能体预算四项 + 并发/轮次 | 2/4/10/4 · 2/6 | `run-subagent.js` 的 `subBudget` / `clampInt` | 并发 8 / 轮次 30（`clampInt` 上限，schema 里已写 max） |
 

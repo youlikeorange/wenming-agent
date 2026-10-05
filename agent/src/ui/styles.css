@@ -286,8 +286,63 @@ html[data-fontscale="1.2"] { font-size: 17px; }
 .marker-sep { display: flex; align-items: center; gap: 0.6rem; font-size: 0.72rem; color: var(--subtle); }
 .marker-sep::before, .marker-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }
 
+/* 折叠起来的"操作组"（features/TraceGroup.jsx）：折叠时一行摘要，展开后逐条缩进在一条浅导轨里。
+   导轨两端用渐变淡出——比实线更像"归属关系"，而不是"又一个边框"。
+   **字号与正文一致（1rem）**：操作信息也是给人读的正文（旧观感 0.78rem 在真机上是"一行小灰字"）。
+   Tailwind 的 text-base 压不过这里：本文件写在 @import 之外（不在 utilities 层里），层外的规则优先。 */
+.trace-group-head,
+.trace-row { font-size: 1rem; }
+.trace-group-head {
+  border-radius: var(--radius-sm); padding: 0.35rem 0.4rem;
+  cursor: pointer; transition: background-color 0.15s ease;
+}
+.trace-group-head:hover { background: color-mix(in srgb, var(--muted) 60%, transparent); }
+.trace-rail { position: relative; margin-left: 0.9rem; padding-left: 0.7rem; }
+.trace-rail::before {
+  content: ""; position: absolute; left: 0; top: 0.2rem; bottom: 0.2rem; width: 1px;
+  background: linear-gradient(to bottom, transparent, var(--border) 14%, var(--border) 86%, transparent);
+}
+
 /* 会话大纲（features/SessionOutline.jsx）跳转到的目标消息：整条一闪，告诉用户"到了"。
    用背景色渐变而不是外发光——消息行是通栏的，外发光会被滚动容器裁掉、只剩上下两条边。 */
 @keyframes ol-flash { 0%, 25% { background-color: color-mix(in srgb, var(--primary) 12%, transparent); } 100% { background-color: transparent; } }
 .ol-target { border-radius: var(--radius-md); animation: ol-flash 1.7s ease-out 1; }
 @media (prefers-reduced-motion: reduce) { .ol-target { animation-duration: 0.5s; } }
+
+/* ============================ 对话列：左边 --chat-pad、右边 --chat-pad-right ============================
+   消息流与输入框**共用这一个宽度**（两者都挂 .chat-col）。
+   2026-10-04 的三轮要求：先"两边留白、文本居中"（48rem 居中列，宽屏下两边各两百多像素），
+   随即"留白太多了，10px 就够了"，再说"消息显示区右侧留白再大一些，20px"——
+   所以左边 10px、右边 20px（**右侧要大一点是有意的**：消息/徽标都贴着列的右缘，
+   左边还有头像占位，看着会偏紧）。要调就调这两个变量；想再收窄阅读宽度再加 max-width。
+   **两者必须用同一个类**：2026-10-01 就是"消息列一个宽度、输入框另一个宽度"，
+   宽屏下输入框边框与消息列错开十几像素（当时的处理是把居中列整个取消了）。
+   **留白只作用桌面视图（≥768px）**：2026-10-05 用户指出手机视图不用调（当初要的就是"电脑视图
+   两边留白"）——手机（≤767px，与 useIsPhone 同一个断点）面板本来就窄，列直接占满，
+   两边只留滚动条沟槽。 */
+:root { --chat-pad: 10px; --chat-pad-right: 20px; }
+@media (min-width: 768px) {
+  .chat-col {
+    width: calc(100% - var(--chat-pad) - var(--chat-pad-right));
+    margin-left: var(--chat-pad);
+    margin-right: var(--chat-pad-right);
+  }
+}
+
+/* 两个容器（消息滚动区、输入区外层）**都**预留滚动条沟槽的两侧空间（stable both-edges）：
+   · 只给消息区留右侧：内容盒比输入区窄 9px，列整体偏左 4~5px；
+   · 只给消息区留两侧：输入区的内容盒比它宽 18px，两者边界又对不上；
+   两侧都留 = 两个容器的内容盒完全一致 → 列的左右边界严丝合缝（真机实测出来的）。 */
+.chat-gutter { overflow-y: auto; scrollbar-gutter: stable both-edges; }
+
+/* ============================ 侧栏的字号（会话名 / 项目信息） ============================
+   用户要求（2026-10-04）：左侧的会话与项目信息"比正文稍大即可"。正文是 1rem，
+   这里给主信息 1.07rem（默认字号下 15px）、第二行与分组头 0.86rem（12px）——
+   原来是 12–13px 与 10.5–11px，在侧栏里找东西时偏小。
+   用 rem 不用 px：字号档（13–17px 根字号）一变跟着变。 */
+.sidebar-lead { font-size: 1.07rem; }
+.sidebar-sub { font-size: 0.86rem; }
+
+/* 会话大纲的桌面导轨（.ol-rail）：贴消息区右缘。
+   列几乎占满面板时（--chat-pad 只有 10px）没地方把导轨放在列外，就还贴右缘（0.625rem）。 */
+.ol-rail { right: 0.625rem; }
