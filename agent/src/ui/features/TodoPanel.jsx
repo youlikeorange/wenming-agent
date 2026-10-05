@@ -1,8 +1,10 @@
-// TodoPanel.jsx —— 右上角悬浮的任务清单（agent 用 todo_write 维护；全完成即被服务端丢弃）
+// TodoPanel.jsx —— 右上角悬浮的任务清单（agent 用 todo_write 维护；全部完成后保留显示）
 //
 //  两块形态共用一个组件：折叠 = 一枚小胶囊（进度 2/5，点开）；展开 = 清单卡片
 //  （每项 ✓/○ + 文本 + 完成时间；进度条；收起按钮）。数据在 state/todo.js。
 //  位置固定在右上角、顶栏之下（z-40：低于设置抽屉/对话框的 z-50，不挡它们）。
+//  宽屏（≥1024px）下消息区在右侧留了与侧栏等宽的清单区（styles.css 的 --todo-zone），
+//  卡片用 .todo-card 收进那块留白里；窄屏照旧悬浮（w ≤ 320px）。
 import { Check, ChevronUp, ListChecks, Minus } from 'lucide-react';
 import { cn } from '../lib/utils.js';
 import { fmtTime } from '../lib/format.js';
@@ -61,7 +63,7 @@ export default function TodoPanel() {
     );
   }
   return (
-    <div className="fixed right-3 top-14 z-40 w-[min(320px,92vw)] rounded-lg border border-border bg-card/95 shadow-lg backdrop-blur">
+    <div className="todo-card fixed right-3 top-14 z-40 rounded-lg border border-border bg-card/95 shadow-lg backdrop-blur">
       <div className="flex items-center gap-2 border-b border-border/70 px-3 py-2">
         <ListChecks className="size-4 shrink-0 text-muted-foreground" />
         <span className="min-w-0 flex-1 truncate text-xs text-foreground">任务清单</span>
@@ -76,7 +78,7 @@ export default function TodoPanel() {
         {data.items.map((it, i) => <Item key={`${i}:${it.text}`} it={it} />)}
       </ul>
       <p className="border-t border-border/70 px-3 py-1.5 text-[10.5px] text-subtle">
-        agent 自己维护；全部完成后这项清单会被自动丢弃
+        agent 自己维护；全部完成后留在这里，下一份清单会覆盖它
       </p>
     </div>
   );

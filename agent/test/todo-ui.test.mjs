@@ -56,7 +56,7 @@ test('★ 浮层渲染：进度、逐项状态、完成时间；折叠后只剩�
   assert.ok(html.includes('1/2 完成'), '★ 进度（已完成/总数），实际：' + html.slice(0, 300));
   assert.ok(html.includes('查资料') && html.includes('写结论'), '两项都在');
   assert.ok(html.includes('完成于'), '★ 已完成项要显示完成时间');
-  assert.ok(html.includes('全部完成后这项清单会被自动丢弃'), '脚注说清"全完成即丢弃"的规则');
+  assert.ok(html.includes('全部完成后留在这里'), '脚注说清"完成保留"的规则（2026-10-05 起）');
 
   /* 折叠态：只剩小胶囊（点击展开） */
   patch({ todo: { open: false, data: TODO, sessionId: 's1', loadedAt: 0 } });
@@ -66,7 +66,7 @@ test('★ 浮层渲染：进度、逐项状态、完成时间；折叠后只剩�
   assert.ok(!small.includes('查资料'), '折叠时不铺开清单');
 });
 
-test('★ 状态接线：事件里的 todo 落进状态；null（已丢弃）要把浮层清掉', async () => {
+test('★ 状态接线：事件里的 todo 落进状态；null（显式清空）要把浮层清掉', async () => {
   const { state, patch } = await import('../src/ui/state/store.js');
   const { applyTodo } = await import('../src/ui/state/todo.js');
   state.activeSessId = 's1';
@@ -83,9 +83,10 @@ test('★ 状态接线：事件里的 todo 落进状态；null（已丢弃）要
   applyTodo({ items: [{ text: '别的会话的', status: 'pending' }], total: 1, done: 0 }, 's2');
   assert.ok(state.todo.data.items.some((i) => i.text === '查资料'), '别的会话的清单不覆盖当前这条');
 
-  /* null = agent 全完成/清空 → 浮层收起 */
+  /* null = agent 写了空清单（显式清空）→ 浮层收起。全部完成不再清空（2026-10-05 起），
+     做完的清单保留显示——那是下面的 SSE 场景。 */
   applyTodo(null, 's1');
-  assert.equal(state.todo.data, null, '★ null 是有意义的取值（清单已丢弃）');
+  assert.equal(state.todo.data, null, '★ null 是有意义的取值（显式清空）');
 });
 
 test('★ 模型侧的工具清单里有 todo_write；子智能体不给它（清单是主对话的规划工具）', async () => {
@@ -140,19 +141,19 @@ test('★★ 事件流：托管运行里 todo_write 的结果经 SSE 推到浮�
         state: 'done', ok: true, note: '清单 1/2', ms: 3, result: '已更新任务清单（1/2 完成）：…', resultChars: 40,
         todo: { sessionId: 's1', items: [{ text: '查资料', status: 'completed', completedAt: 1700000003000 }, { text: '写结论', status: 'pending' }], total: 2, done: 1 },
       },
-      /* 最后一项也做完：清单被丢弃 → 事件里是 null（浮层要收掉） */
-      { type: 'tool_end', runId: 'r1', sessionId: 's1', token: 1, callId: 'c2', name: 'todo_write', label: '任务清单：清空',
-        state: 'done', ok: true, note: '清单已清空', ms: 2, result: '清单里 2 项全部完成，已丢弃。', resultChars: 20, todo: null },
+      /* 最后一项也做完：清单**保留**（2026-10-05 起）→ 事件里是 2/2 的完成态清单 */
+      { type: 'tool_end', runId: 'r1', sessionId: 's1', token: 1, callId: 'c2', name: 'todo_write', label: '任务清单：2/2',
+        state: 'done', ok: true, note: '清单 2/2', ms: 2, result: '已更新任务清单（2/2 完成）：…全部完成——清单会保留在界面右上角。', resultChars: 60,
+        todo: { sessionId: 's1', items: [{ text: '查资料', status: 'completed', completedAt: 1700000003000 }, { text: '写结论', status: 'completed', completedAt: 1700000006000 }], total: 2, done: 2 } },
       { type: 'end', runId: 'r1', sessionId: 's1', status: 'done', error: '', ms: 1200, undo: null },
     ]),
   });
   try {
     await Run.reattach('s1');
     await tick(80);
-    /* 两条 tool_end 都在同一个 tick 里到达：最终态是"已丢弃"。
-       所以分两步断言：先看第一条的效果（用中间快照），再看最终态。 */
     const msg = state.history[state.history.length - 1];
     assert.ok(msg.trace.length >= 2, '两条工具卡都在追踪条上');
-    assert.equal(state.todo.data, null, '★ 最后一条（全完成 → 丢弃）到达后，浮层数据被清空');
+    assert.ok(state.todo.data && state.todo.data.done === 2 && state.todo.data.total === 2,
+      '★ 最后一条（全完成 → 保留）到达后，浮层显示 2/2 的完成态清单');
   } finally { r.restore(); Run.reset(); }
 });
