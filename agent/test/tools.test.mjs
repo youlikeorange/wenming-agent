@@ -286,7 +286,7 @@ function stubFetch(handler) {
   return { seen, restore: () => { globalThis.fetch = orig; } };
 }
 
-const baseBudget = () => ({ search: 0, aux: 0, fs: 0, exec: 0, wait: 0, maxSearch: 3, maxAux: 8, maxFs: 12, maxExec: 6, maxWait: 12 });
+const baseBudget = () => ({ search: 0, aux: 0, fs: 0, exec: 0, wait: 0, screen: 0, maxSearch: 3, maxAux: 8, maxFs: 12, maxExec: 6, maxWait: 12, maxScreen: 30 });
 
 /** 会话 / 项目 / 全局记忆的假实现（ToolRunner 用到 write/search/find/remove/listOf/scopeCn/projectMeta） */
 function fakeMemory(hasProject = false) {
@@ -791,4 +791,52 @@ test('ToolRunner：关掉命令行开关 → wait 一并停用（同一开关）
   const { budget } = initRunner({ val2: valMap({ plugin_exec_on: false }) });
   const r = await ToolRunner.runTool({ name: 'wait', args: { seconds: 1 } }, '', budget);
   assert.equal(r.note, '已停用', '跟着命令行走同一个开关');
+});
+
+/* ---------- 屏幕操作插件（OmniParser 看屏幕 + xdotool 键鼠） ---------- */
+
+test('AgentDefs：屏幕工具跟独立开关（plugin_screen_on，默认关），子智能体一律不给', () => {
+  initDefs({ val2: valMap({ plugin_screen_on: false }) });
+  const off = namesOf(AgentDefs.pluginToolDefs());
+  for (const n of ['screen_see', 'screen_click', 'screen_type', 'screen_key']) {
+    assert.ok(!off.includes(n), `开关关 → ${n} 不注册`);
+  }
+  initDefs({ val2: valMap({ plugin_screen_on: true }) });
+  const on = namesOf(AgentDefs.pluginToolDefs());
+  for (const n of ['screen_see', 'screen_click', 'screen_type', 'screen_key']) {
+    assert.ok(on.includes(n), `开关开 → ${n} 注册（实际 ${on.join(',')}）`);
+  }
+  assert.ok(AgentDefs.PLUGIN_TOOL_NAMES.has('screen_see'), '在插件族里（同一套登录/绑定闸门）');
+  assert.ok(AgentDefs.CONFIRM_SEQUENTIAL.has('screen_click') && AgentDefs.CONFIRM_SEQUENTIAL.has('screen_type'),
+    '动作类必须串行（一个桌面一只鼠标）');
+  const rw = AgentDefs.subagentToolDefsFor(AgentDefs.pluginToolDefs().concat(
+    [{ type: 'function', function: { name: 'screen_see', description: '', parameters: { type: 'object', properties: {} } } }]
+  ), true).map((d) => d.function.name);
+  assert.ok(!rw.includes('screen_see') && !rw.includes('screen_click'), '★ 屏幕工具不给子智能体');
+});
+
+test('ToolRunner：屏幕工具有自己的预算与开关（不占 fs/exec）', async () => {
+  const { budget } = initRunner({ val2: valMap({ plugin_screen_on: true }) });
+  const stub = stubFetch(() => jsonRes(200, { ok: true, note: '已按键', text: '已发送按键：Return。' }));
+  try {
+    const r = await ToolRunner.runTool({ name: 'screen_key', args: { keys: 'Return' } }, '', budget);
+    assert.equal(r.ok, true, '服务端返回成功 → ok:true');
+    assert.equal(budget.screen, 1, '扣屏幕预算');
+    assert.equal(budget.exec, 0, '不占命令预算');
+    assert.equal(budget.fs, 0, '不占文件预算');
+  } finally { stub.restore(); }
+});
+
+test('ToolRunner：屏幕开关关着 → screen 工具不执行', async () => {
+  const { budget } = initRunner({});
+  const r = await ToolRunner.runTool({ name: 'screen_see', args: {} }, '', budget);
+  assert.equal(r.note, '已停用', '默认（关）→ 已停用');
+  assert.equal(budget.screen, 0, '没扣预算');
+});
+
+test('AgentDefs：屏幕工具的卡片标题可读', () => {
+  initDefs();
+  assert.equal(AgentDefs.labelOf({ name: 'screen_click', args: { x: 30, y: 40 } }), '点击 (30,40)');
+  assert.equal(AgentDefs.labelOf({ name: 'screen_see', args: {} }), '看屏幕');
+  assert.equal(AgentDefs.labelOf({ name: 'screen_key', args: { keys: 'ctrl+c' } }), '按键：ctrl+c');
 });

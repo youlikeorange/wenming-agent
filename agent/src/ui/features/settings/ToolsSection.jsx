@@ -24,6 +24,7 @@ import { EmptyHint, NoteBox, ParamRow } from './parts.jsx';
 const GROUPS = [
   ['fs', '文件与目录'],
   ['exec', '命令行'],
+  ['screen', '屏幕操作'],
   ['search', '联网搜索'],
   ['memory', '记忆'],
   ['skills', '技能'],

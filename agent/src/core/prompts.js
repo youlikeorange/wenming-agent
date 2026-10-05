@@ -267,6 +267,40 @@ const DEFAULTS = [
       + '每次等待结束后用 run_command 查一次日志或结果文件，再决定继续等还是收尾。'
       + '单次不超过面板「单次等待上限」（默认 300 秒），传大了按上限算；这一轮等待次数也有限（面板「单轮等待上限」）。'
       + '不要用 wait 代替实际工作，也不要在等用户回复时使用它。' },
+  /* ---- 屏幕操作（OmniParser 看屏幕 + xdotool 键鼠）：开关默认关，开了就是用户明示授权 ---- */
+  { id: 'plugin.screen.usage', group: 'tools', kind: 'tool', name: '屏幕操作的使用说明',
+    desc: '插件「屏幕操作」开启时注入。写清"看屏幕→动作→再确认"的循环、坐标系与安全边界。',
+    text: '你有屏幕操作能力（用户已授权）：**screen_see** 截下这台机器的真实桌面，用本机 OmniParser '
+      + '解析成带坐标的元素清单（文本/控件 + 屏幕像素坐标）；**screen_click / screen_type / screen_key** '
+      + '用 xdotool 真实地操作键盘鼠标。用法：\n'
+      + '· 循环姿势：先 screen_see 看清 → 决定动作（click 元素的 center 坐标 / type 文本 / key 组合键）'
+      + '→ 再 screen_see 确认结果 → 下一步。不要凭记忆点坐标——界面会变。\n'
+      + '· 坐标就是屏幕像素（screen_see 返回的 center 直接用）；输入进的是**当前聚焦的窗口**，'
+      + '输入前必要时先点一下目标输入框。\n'
+      + '· **这是用户的真实桌面**：删除文件、关闭窗口、提交表单、发送消息这类不可逆或对外的动作，'
+      + '先跟用户确认再做；看屏幕（screen_see）是安全的，多看永远好过瞎点。\n'
+      + '· 用户可能在旁边看着/用着电脑：动作做一步看一步，别连续猛点。解析服务没起时工具会报'
+      + '"怎么启动"，如实转告用户即可。\n'
+      + '· 子智能体没有屏幕工具；需要看屏幕/操作桌面时由你来做。' },
+  { id: 'tool.screen_see.schema.desc', group: 'tools', kind: 'schema', name: 'screen_see 的 schema 描述',
+    desc: '截屏并解析（看屏幕）。',
+    text: '截取当前真实桌面的整屏，返回按阅读顺序排好的元素清单：类型（文本/控件）、内容、屏幕像素坐标（center 可直接用于 screen_click）。'
+      + '这是"看屏幕"的唯一方式——动作前后都要看。deliver=true 时把标注了编号的截图放进「待下载」给用户看。' },
+  { id: 'tool.screen_click.schema.desc', group: 'tools', kind: 'schema', name: 'screen_click 的 schema 描述',
+    desc: '在屏幕像素坐标上点击（左/右/双击）。',
+    text: '把鼠标移到屏幕像素坐标 (x,y) 并点击（默认左键；double=true 双击；right=true 右键）。坐标来自 screen_see 的元素 center。'
+      + '操作的是用户真实桌面：不可逆的动作（删除、提交、发送）先问过用户。点完用 screen_see 确认。' },
+  { id: 'tool.screen_type.schema.desc', group: 'tools', kind: 'schema', name: 'screen_type 的 schema 描述',
+    desc: '向当前聚焦的窗口输入文本。',
+    text: '像真人敲键盘一样把 text 输入当前聚焦的窗口（先点一下目标输入框让它聚焦；clear=true 时先全选删除已有内容）。'
+      + '输完用 screen_see 确认。一次别超过 2000 字符，长文本分几次。' },
+  { id: 'tool.screen_key.schema.desc', group: 'tools', kind: 'schema', name: 'screen_key 的 schema 描述',
+    desc: '发送按键或组合键。',
+    text: '向当前聚焦的窗口发送按键：Return / space / Tab / Escape / F1-F12 / ctrl+c / alt+F4（加号连组合键，空格分隔连发多个）。'
+      + '注意 alt+F4、ctrl+w 这类会关掉窗口的键——除非用户明确要求。按完用 screen_see 确认。' },
+  { id: 'loop.budget_screen', group: 'loop', kind: 'loop', name: '屏幕操作次数用尽',
+    desc: '单轮 screen_* 工具次数达到上限后回的文本。',
+    text: '本轮屏幕操作次数已达上限，请基于已看到的内容收尾，或让用户调大「单轮屏幕操作上限」。' },
   /* ---- 任务清单（todo）：agent 自己决定要不要列，面板右上角悬浮显示给用户看 ---- */
   { id: 'tool.todo_write.desc', group: 'tools', kind: 'tool', name: '任务清单 todo_write',
     desc: '注入给模型的使用说明：什么时候该列 todo、怎么更新、完成与清空的语义。',

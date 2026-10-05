@@ -141,6 +141,13 @@ export const TOOL_FIELDS = {
       + '服务端硬上限默认 1800 秒（AGENT_WAIT_MAX_SEC 可抬），这里只能更小。' },
   plugin_wait_max: { label: '单轮等待上限', group: 'exec', kind: 'number', def: 12, min: 1, step: 1,
     tip: '一轮里最多等几次（wait 与命令条数分开算）。单次上限 × 次数就是一轮能自主等待的总时长。' },
+  /* ---- 屏幕操作：OmniParser 看屏幕 + xdotool 键鼠（操作的是真实桌面，默认关） ---- */
+  plugin_screen_on: { label: '屏幕操作（OmniParser）', group: 'screen', kind: 'switch', def: false,
+    tip: '给 agent 接上"看屏幕 + 键鼠"：截屏交给本机 OmniParser 服务解析成元素清单，'
+      + '再由 xdotool 点击/输入。**操作的是真实桌面**——开这个开关就是授权；'
+      + '服务没起时先在宿主机上执行：bash ~/OmniParser/screen-service.sh start（仅支持 X11）。' },
+  plugin_screen_max: { label: '单轮屏幕操作上限', group: 'screen', kind: 'number', def: 30, min: 1, step: 1,
+    tip: '一轮里 screen_* 工具最多调用几次（看屏幕 + 动作合计）。' },
   /* ---- 结果与记录：一条工具结果"记多少、留多少"（原先全部硬编码 4000，用户撞到就说不出话） ---- */
   record_trace_chars: { label: '追踪条单条结果上限', group: 'record', kind: 'number', def: 4000, min: 500, max: 200000, step: 500, unit: '字',
     tip: '工具结果写进追踪条/会话记录的字数上限——读到一篇长文档时，截断的就是它。'

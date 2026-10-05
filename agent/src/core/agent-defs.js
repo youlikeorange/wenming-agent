@@ -47,10 +47,17 @@ const DELIVER_NAMES = ['deliver_file'];
 /* wait（长任务里"等一段时间再查"）跟着命令行走同一个开关（plugin_exec_on）：
    它不改任何东西，但只有配合"提交后台任务 → 等待 → 查进度"才有意义，单独存在只会诱导空转。 */
 const PLUGIN_TOOL_NAMES = new Set(FS_READ_NAMES.concat(FS_WRITE_NAMES, FS_DELETE_NAMES, ['run_command', 'wait'], DELIVER_NAMES));
+/* 屏幕操作（OmniParser 看屏幕 + xdotool 键鼠）：独立的开关（plugin_screen_on，默认关）。
+   操作的是用户的**真实桌面**——这是所有插件里最能出事的一组，所以单独一个开关，
+   而且动作类（点击/输入/按键）必须串行：两只手同时操作一个桌面必然出错。 */
+const SCREEN_TOOL_NAMES = ['screen_see', 'screen_click', 'screen_type', 'screen_key'];
+SCREEN_TOOL_NAMES.forEach((n) => PLUGIN_TOOL_NAMES.add(n));   // Set.add 只收一个参数，不能 add(...names)
 /* 会弹确认框、且会改动东西的工具：串行执行（agent.js 里"写类工具宜 sequential"）。
    一来它们都要过同一个确认框（并行会抢同一个弹框），
    二来两条命令/一次写入本来也不该同时动同一份东西。只读类照旧并行。 */
-const CONFIRM_SEQUENTIAL = new Set(FS_WRITE_NAMES.concat(FS_DELETE_NAMES, ['run_command', 'skill_write', 'skill_delete', 'todo_write']));
+const CONFIRM_SEQUENTIAL = new Set(FS_WRITE_NAMES.concat(FS_DELETE_NAMES, ['run_command', 'skill_write', 'skill_delete', 'todo_write',
+  /* 屏幕动作类：点错一个坐标、打错一段字都写在用户的真实桌面上——串行执行。 */
+  'screen_click', 'screen_type', 'screen_key']));
 const FS_LABEL = {
   read_file: '读文件', list_directory: '列目录', directory_tree: '目录树', search_files: '找文件',
   get_file_info: '文件属性', write_file: '写文件', edit_file: '改文件', create_directory: '建目录',
@@ -235,6 +242,28 @@ export function createAgentDefs() {
     }, ['seconds']));
   }
 
+  /** 屏幕操作（OmniParser + xdotool）：看屏幕 + 键鼠。开关 plugin_screen_on 默认关。 */
+  function SCREEN_TOOL_SPECS() {
+    return [
+      fn('screen_see', 'tool.screen_see.schema.desc', p({
+        deliver: { type: 'boolean', description: '把标注过的截图放进「待下载」给用户看（可选，默认 false）' },
+      }, [])),
+      fn('screen_click', 'tool.screen_click.schema.desc', p({
+        x: { type: 'number', description: '屏幕像素 x（screen_see 元素的 center）' },
+        y: { type: 'number', description: '屏幕像素 y' },
+        double: { type: 'boolean', description: '双击（默认 false）' },
+        right: { type: 'boolean', description: '右键（默认 false）' },
+      }, ['x', 'y'])),
+      fn('screen_type', 'tool.screen_type.schema.desc', p({
+        text: { type: 'string', description: '要输入的文本（进当前聚焦的窗口）' },
+        clear: { type: 'boolean', description: '输入前先 Ctrl+A 全选删除（替换已有内容时用）' },
+      }, ['text'])),
+      fn('screen_key', 'tool.screen_key.schema.desc', p({
+        keys: { type: 'string', description: '按键名，如 Return / space / ctrl+c / alt+F4；空格分隔可连发' },
+      }, ['keys'])),
+    ];
+  }
+
   /** 本轮插件闸门：要**已登录**（文件与命令行都以"登录的那个系统账号"身份执行，没登录就没有身份，
    *  服务端本来也会 401）**且已绑定本机账号**（bound() 为真；登录只说明"是谁"，绑定才说明
    *  "这台机器上的哪个账号可以代他执行"）。两者差一个都不给插件工具。 */
@@ -286,6 +315,7 @@ export function createAgentDefs() {
       if (val2('plugin_fs_delete')) FS_DELETE_NAMES.forEach((n) => out.push(T[n]));
     }
     if (val2('plugin_exec_on')) { out.push(EXEC_TOOL_SPEC()); out.push(WAIT_TOOL_SPEC()); }
+    if (val2('plugin_screen_on')) out.push(...SCREEN_TOOL_SPECS());
     if (val2('plugin_deliver_on')) out.push(DELIVER_TOOL_SPEC());
     return out;
   }
@@ -356,9 +386,11 @@ export function createAgentDefs() {
    *  · allowWrite=false 时去掉写/删/命令与一切会改数据的工具（含 memory_write / skill_* 的写侧）。
    *  判据用"名字是否属于只读集合"，新增工具忘了归类时**默认不给**（保守方向）。 */
   function subagentToolDefsFor(all, allowWrite) {
-    /* 一律不给的：spawn_agent（不许递归）与 todo_write（清单是主对话的规划工具，
-       子智能体只干被派的那一件事——让它改主对话的清单只会两头对不上）。 */
-    const excluded = (n) => n === 'spawn_agent' || n === 'todo_write';
+    /* 一律不给的：spawn_agent（不许递归）、todo_write（清单是主对话的规划工具，
+       子智能体只干被派的那一件事——让它改主对话的清单只会两头对不上）、
+       屏幕操作三件套（两只手 + 一个鼠标，子智能体碰桌面必出乱子；screen_see 也不给，
+       它只有配合动作才有意义，而动作一律不给）。 */
+    const excluded = (n) => n === 'spawn_agent' || n === 'todo_write' || SCREEN_TOOL_NAMES.includes(n);
     if (allowWrite) return all.filter((d) => !excluded(d.function.name));
     return all.filter((d) => SUBAGENT_ALLOWED_NAMES.has(d.function.name) && !excluded(d.function.name));
   }
@@ -380,6 +412,10 @@ export function createAgentDefs() {
         const done = items.filter((i) => i && i.status === 'completed').length;
         return items.length ? `任务清单：${done}/${items.length}` : '任务清单：清空';
       },
+      screen_see: () => '看屏幕',
+      screen_click: () => `点击 (${a.x},${a.y})${a.right ? ' 右键' : ''}${a.double ? ' 双击' : ''}`,
+      screen_type: () => `输入：${shorten(a.text, 40)}`,
+      screen_key: () => `按键：${shorten(a.keys, 24)}`,
       spawn_agent: () => `子智能体：${shorten(a.label || a.task || '(未给任务)', 44)}`,
     };
     const name = (call && call.name) || '';
@@ -393,7 +429,7 @@ export function createAgentDefs() {
 
   return {
     init,
-    FS_READ_NAMES, FS_WRITE_NAMES, FS_DELETE_NAMES, PLUGIN_TOOL_NAMES, DELIVER_NAMES,
+    FS_READ_NAMES, FS_WRITE_NAMES, FS_DELETE_NAMES, PLUGIN_TOOL_NAMES, DELIVER_NAMES, SCREEN_TOOL_NAMES,
     CONFIRM_SEQUENTIAL, FS_LABEL, labelOf,
     searchToolDef, searchOn, skillsActive, skillsToolDefs, memoryToolDefs,
     pluginToolDefs, pluginsAllowed, activeToolDefs,

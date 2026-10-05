@@ -58,7 +58,8 @@ export function promptBlocks(env) {
   // 插件说明只在对应插件开着**且插件工具真的可用**时注入（关掉/未登录/未绑定 = 连工具都不注册）
   const allow = AgentDefs.pluginsAllowed();
   blocks = blocks.filter((b) => (b.id === 'plugin.fs.usage' ? (allow && !!val2('plugin_fs_on'))
-    : b.id === 'plugin.exec.usage' ? (allow && !!val2('plugin_exec_on')) : true));
+    : b.id === 'plugin.exec.usage' ? (allow && !!val2('plugin_exec_on'))
+    : b.id === 'plugin.screen.usage' ? (allow && !!val2('plugin_screen_on')) : true));
   const skillIndex = Prompts.skillIndexBlock();
   if (skillIndex) blocks.push(skillIndex);
   const gate = AgentDefs.pluginGateNote();

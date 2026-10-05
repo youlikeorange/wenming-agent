@@ -52,6 +52,7 @@ const TOOL_SHORT = {
   read_file: '读文件', list_directory: '列目录', directory_tree: '目录树', search_files: '找文件', get_file_info: '文件属性',
   write_file: '写文件', edit_file: '改文件', create_directory: '建目录', move_file: '移动', delete_path: '删除',
   run_command: '命令', web_search: '搜索', deliver_file: '传给用户', wait: '等待',
+  screen_see: '看屏幕', screen_click: '点击', screen_type: '输入', screen_key: '按键',
   use_skill: '加载技能', list_skills: '技能列表', skill_import: '导入技能', skill_write: '写技能', skill_delete: '删技能',
   memory_write: '记记忆', memory_search: '查记忆', memory_read: '读记忆', memory_forget: '忘记忆',
   todo_write: '任务清单', spawn_agent: '子智能体',
