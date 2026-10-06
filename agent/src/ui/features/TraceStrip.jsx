@@ -120,14 +120,17 @@ function Head({ t }) {
 /** 媒体预览（图片 / 视频 / 音频）：deliver_file 交付的"能显示的文件"直接画在卡片里，
  *  不用先下载到本地才能看。点击图片在新页看原图；音视频用浏览器原生控件（服务端支持 Range，
  *  进度条能拖）。文件被删除 / 加载失败时整个预览消失，只留下面的下载行——不挂破图。
- *  预览链接是 inlineUrl（服务端只对白名单内的类型按 inline 发出，见 ui/lib/filekind.js）。 */
+ *  预览链接是 inlineUrl（服务端只对白名单内的类型按 inline 发出，见 ui/lib/filekind.js）。
+ *  三种媒体统一**居中 + 自适应宽度**（2026-10-06 用户要求）：视频多宽占多宽（不拉满整行），
+ *  图片/音频同口径；音频给个上限宽度（进度条太短不好拖）。 */
 function MediaPreview({ f, kind }) {
   const [failed, setFailed] = useState(false);
   if (failed) return null;
   const url = inlineUrl(f.name);
   if (kind === 'image') {
     return (
-      <a href={url} target="_blank" rel="noreferrer" title="点击在新页查看原图" className="block border-b border-border">
+      <a href={url} target="_blank" rel="noreferrer" title="点击在新页查看原图"
+        className="flex justify-center border-b border-border">
         <img src={url} alt={f.name} loading="lazy" onError={() => setFailed(true)}
           className="max-h-72 w-auto max-w-full object-contain" />
       </a>
@@ -135,13 +138,16 @@ function MediaPreview({ f, kind }) {
   }
   if (kind === 'video') {
     return (
-      <video controls preload="metadata" src={url} onError={() => setFailed(true)}
-        className="max-h-72 w-full border-b border-border bg-black" />
+      <div className="flex justify-center border-b border-border">
+        <video controls preload="metadata" src={url} onError={() => setFailed(true)}
+          className="max-h-72 max-w-full" />
+      </div>
     );
   }
   return (
-    <div className="border-b border-border px-2 pt-2">
-      <audio controls preload="metadata" src={url} onError={() => setFailed(true)} className="w-full" />
+    <div className="flex justify-center border-b border-border px-3 py-2">
+      <audio controls preload="metadata" src={url} onError={() => setFailed(true)}
+        className="w-full max-w-md" />
     </div>
   );
 }
