@@ -109,7 +109,7 @@
 | POST | `/agent/search` | 联网搜索（内置技能用；**默认匿名不带 Key**，`ANYSEARCH_API_KEY` 才带） | `{query,max_results 1-10}` | `{ok,markdown}` / `{ok:false,error}` | `search.js:45-69` |
 | POST | `/agent/skills/import` | 从 SKILL.md 装技能（`dryRun` 预览） | `{path,auto?,dryRun?}` | `{items[{name,description,auto,file,chars}]}` | `index.js:299-323` · `skills.js:177-205` |
 | GET | `/agent/files` | 待下载目录列表 | — | `{dir,entries[{name,size,exec,packaged,downloadName}]}` | `files.js:108-133` |
-| GET | `/agent/files/download` | 下载（可执行后缀自动改发 zip） | `?name=` | 文件字节（头 `X-Agent-Packaged`） | `files.js:251-272` |
+| GET | `/agent/files/download` | 下载（可执行后缀自动改发 zip）；`?inline=1` 且类型在内联白名单（`files.js` 的 `INLINE_MIME`，与 `ui/lib/filekind.js` 对齐）时按 `Content-Disposition: inline` 发出并支持 Range（206/416，供卡片里的 `<img>/<video>/<audio>`），带 CSP sandbox + nosniff；其余类型照旧 attachment | `?name=` | 文件字节（头 `X-Agent-Packaged`） | `files.js` 下载分支 |
 | POST | `/agent/files/delete` | 删除待下载文件 | `{name}` | `{ok}` | `files.js:279-286` |
 | GET | `/agent/tools/status` | 身份/白名单/上限/危险清单/工具表 | — | `{binding,roots,start,limits,deny[],tools[]}` | `tools/index.js:47-76` |
 | POST | `/agent/tools/roots` | 可访问目录 / 项目起点 | `{action:'add'\|'remove'\|'set'\|'reset'\|'start',…}` | `{ok,roots[]}` / `{ok,start}` | `tools/index.js:78-92` |
@@ -340,6 +340,7 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 | 改**侧栏字号**（会话名 / 项目信息） | `styles.css` 的 `.sidebar-lead`（1.07rem）/ `.sidebar-sub`（0.86rem）、`features/Sidebar.jsx`（会话条目、项目卡、项目分组头；名字上挂了 `data-side` 供检查脚本量字号） | — | — | 用户 2026-10-04 要求"比正文稍大即可"（正文 1rem）；真机回归 `../test/chat-column-ui-check.mjs` 里那三条字号断言 |
 | 改**对话列宽度 / 两边留白 / 右侧任务清单区** | `styles.css` 的 `--chat-pad`（左 10px）/ `--chat-pad-right`（窄档桌面的右 20px）/ `--todo-zone`（任务清单区 19rem）/ `.chat-col` / `.chat-gutter`（消息区与输入框**共用这一份**）/ `.todo-card`（TODO 卡片宽）、`features/ChatView.jsx`、`features/Composer.jsx`、`features/SessionOutline.jsx`（`.ol-rail`）、`features/TodoPanel.jsx` | — | — | **≥1024px**：消息区右侧留出与侧栏（`w-[19rem]`）**等宽**的清单区给右上角 TODO（`margin-right: calc(var(--chat-pad) + var(--todo-zone))`），列到两侧留白的间距都 = `--chat-pad`，TODO 卡片（`.todo-card` = 区块宽 − 24px、`right-3`）与浏览器右缘留 12px 间隔；`.ol-rail` 在该断点右移跟着列缘走。**768–1023px 窄档**放不下两根 19rem 柱子，维持旧的 10px/20px、TODO 照旧悬浮。**手机（≤767px，与 `useIsPhone` 同断点）不变**：列占满、两侧只剩沟槽。**两边各写一个宽度就会错开十几像素**（2026-10-01 的老坑）；**两个容器都要 `.chat-gutter`**（`scrollbar-gutter: stable both-edges`）；真机回归 `../test/chat-column-ui-check.mjs`（25 项：桌面等宽区/TODO 不盖消息/手机不变） |
 | 改**会话大纲**（按提问跳转的导航） | `SessionOutline.jsx`（桌面导轨 / 手机浮标 + 底部列表）、`components/ui/sheet.jsx`（`side="bottom"`） | — | — | 两种布局**共用** `buildItems` / `useCurrent` / `jumpTo`，只换外壳；真机回归 `../test/outline-ui-check.mjs`（桌面）+ `../test/outline-phone-ui-check.mjs`（手机视口） |
+| 改**文件卡片的内联预览**（deliver_file 交付的图片/视频/音频直接显示在会话里） | `TraceStrip.jsx` 的 `MediaPreview`/`FileCards`（画什么）、`ui/lib/filekind.js`（按扩展名分类）、`ui/state/downloads.js` 的 `inlineUrl` | — | `lib/agent/files.js`（`INLINE_MIME` 白名单 + `?inline=1` + Range 206/416 + CSP sandbox）、`tools/deliver.js`（返回文案按 `inlineMimeOf` 提示） | **两边白名单表必须一致**（`agent/test/filekind.test.mjs` 逐扩展名比对）；可执行/打包产物永不预览；`mov/mkv/avi/pdf` 刻意不收（编码没保证，预览失败比没有更糟）；加载失败（onError）整块预览消失只剩下载行；真机回归 `../test/file-preview-ui-check.mjs`（17 项：响应头 + 真 DOM + ffmpeg 现造媒体） |
 
 构建与交付：
 

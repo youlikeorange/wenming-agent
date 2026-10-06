@@ -6,8 +6,9 @@ import { Spinner } from '../components/ui/spinner.jsx';
 import { cn } from '../lib/utils.js';
 import { linesOf, traceKind, traceRunning } from '../lib/trace.js';
 import { subagentRecord } from '../state/run.js';
-import { downloadUrl } from '../state/downloads.js';
+import { downloadUrl, inlineUrl } from '../state/downloads.js';
 import { openFileDiff } from '../state/fileDiff.js';
+import { fileKind } from '../lib/filekind.js';
 import { fmtBytes, fmtCount } from '../lib/format.js';
 
 /* 判据全是结构化字段（state/kind），不再比对中文文案——旧会话数据由 ui/lib/trace.js
@@ -116,32 +117,68 @@ function Head({ t }) {
   );
 }
 
+/** 媒体预览（图片 / 视频 / 音频）：deliver_file 交付的"能显示的文件"直接画在卡片里，
+ *  不用先下载到本地才能看。点击图片在新页看原图；音视频用浏览器原生控件（服务端支持 Range，
+ *  进度条能拖）。文件被删除 / 加载失败时整个预览消失，只留下面的下载行——不挂破图。
+ *  预览链接是 inlineUrl（服务端只对白名单内的类型按 inline 发出，见 ui/lib/filekind.js）。 */
+function MediaPreview({ f, kind }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return null;
+  const url = inlineUrl(f.name);
+  if (kind === 'image') {
+    return (
+      <a href={url} target="_blank" rel="noreferrer" title="点击在新页查看原图" className="block border-b border-border">
+        <img src={url} alt={f.name} loading="lazy" onError={() => setFailed(true)}
+          className="max-h-72 w-auto max-w-full object-contain" />
+      </a>
+    );
+  }
+  if (kind === 'video') {
+    return (
+      <video controls preload="metadata" src={url} onError={() => setFailed(true)}
+        className="max-h-72 w-full border-b border-border bg-black" />
+    );
+  }
+  return (
+    <div className="border-b border-border px-2 pt-2">
+      <audio controls preload="metadata" src={url} onError={() => setFailed(true)} className="w-full" />
+    </div>
+  );
+}
+
 /** 可下载文件卡（deliver_file 那张）：**始终可见**，不藏在折叠里——
- *  用户要的是"点一下就下载"，多一步展开都是多余。链接直连服务端（见 ui/state/downloads.js）。 */
+ *  用户要的是"点一下就下载"，多一步展开都是多余。链接直连服务端（见 ui/state/downloads.js）。
+ *  图片/视频/音频（且不是打包产物）上面直接带预览（MediaPreview），其余只有下载行。 */
 function FileCards({ files }) {
   const list = (files || []).filter((f) => f && f.name);
   if (!list.length) return null;
   return (
     <div className="mt-1 w-full space-y-1">
-      {list.map((f) => (
-        <div key={f.name} className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2 py-1.5">
-          <span className="min-w-0 flex-1">
-            <span className="block truncate font-sans text-sm text-foreground" title={f.name}>{f.name}</span>
-            <span className="block text-xs tabular-nums text-subtle">
-              {fmtBytes(f.size || 0)}
-              {f.exec ? ' · 可执行文件：已打包成 zip' : f.packaged ? ' · zip 包' : ''}
-            </span>
-          </span>
-          <a
-            href={downloadUrl(f.name)}
-            download={f.exec && !/\.zip$/i.test(f.name) ? `${f.name}.zip` : f.name}
-            className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            title="下载（浏览器直接下载）"
-          >
-            <Download className="size-3.5" />下载
-          </a>
-        </div>
-      ))}
+      {list.map((f) => {
+        const kind = (f.exec || f.packaged) ? null : fileKind(f.name);
+        return (
+          <div key={f.name} className="w-full overflow-hidden rounded-md border border-border bg-muted/30">
+            {kind ? <MediaPreview f={f} kind={kind} /> : null}
+            <div className="flex items-center gap-2 px-2 py-1.5">
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-sans text-sm text-foreground" title={f.name}>{f.name}</span>
+                <span className="block text-xs tabular-nums text-subtle">
+                  {fmtBytes(f.size || 0)}
+                  {f.exec ? ' · 可执行文件：已打包成 zip' : f.packaged ? ' · zip 包' : ''}
+                </span>
+              </span>
+              <a
+                href={downloadUrl(f.name)}
+                download={f.exec && !/\.zip$/i.test(f.name) ? `${f.name}.zip` : f.name}
+                className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-border px-2 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                title="下载（浏览器直接下载）"
+              >
+                <Download className="size-3.5" />下载
+              </a>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }

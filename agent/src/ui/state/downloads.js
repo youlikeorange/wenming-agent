@@ -17,6 +17,11 @@ import { hooks } from './host.js';
 /** 下载链接（**这是唯一入口**：卡片与菜单都用它，形状一致） */
 export const downloadUrl = (name) => `${EP.filesDownload}?name=${encodeURIComponent(String(name || ''))}`;
 
+/** 内联预览链接（会话卡片里的 <img>/<video>/<audio> 引用这条）：
+ *  同一端点加 inline=1，服务端只对白名单内的图片/音视频按 inline 发出（其余照旧 attachment），
+ *  所以这条链接对任何文件都安全——不支持预览的类型点了就是普通下载。 */
+export const inlineUrl = (name) => `${downloadUrl(name)}&inline=1`;
+
 export async function loadDownloads() {
   patch({ downloads: Object.assign({}, state.downloads, { loading: true, error: '' }) });
   try {
