@@ -146,10 +146,11 @@ function MediaPreview({ f, kind }) {
   );
 }
 
-/** 可下载文件卡（deliver_file 那张）：**始终可见**，不藏在折叠里——
- *  用户要的是"点一下就下载"，多一步展开都是多余。链接直连服务端（见 ui/state/downloads.js）。
- *  图片/视频/音频（且不是打包产物）上面直接带预览（MediaPreview），其余只有下载行。 */
-function FileCards({ files }) {
+/** 可下载文件卡（deliver_file 那张）：图片/视频/音频（且不是打包产物）直接带预览（MediaPreview），
+ *  其余只有下载行。**渲染在折叠组外面**（TraceGroup 收集整轮 files 统一画在这层）——
+ *  交付物是"产出"不是"过程"：操作组跑完会收起，交付的文件必须始终可见、能直接看/下载。
+ *  旧版挂在每条追踪条下面，被折叠组藏住（2026-10-06 用户实测：交付了图片却"什么都没有"）。 */
+export function FileCards({ files }) {
   const list = (files || []).filter((f) => f && f.name);
   if (!list.length) return null;
   return (
@@ -262,7 +263,7 @@ export default function TraceStrip({ trace }) {
   const running = isRunning(t);
   const hasArgs = !!(t.args && typeof t.args === 'object' && Object.keys(t.args).length);
   const hasFiles = Array.isArray(t.files) && t.files.length > 0;
-  /* 子智能体卡：没结论时也要能展开（「查看记录」在里面）；文件卡的文件行**始终可见**（不折叠） */
+  /* 子智能体卡：没结论时也要能展开（「查看记录」在里面）；只有文件清单的条目也要能展开看详情 */
   const hasDetail = hasArgs || !!t.result || (isSub(t) && !!t.subId) || hasFiles;
 
   if (!hasDetail) {
@@ -274,7 +275,8 @@ export default function TraceStrip({ trace }) {
   }
 
   /* 根就是 Marker 行（相邻条之间由 .marker + .marker 自动加细分割线）；
-     flex-wrap 让展开的详情占满下一行，而不是挤在同一行里 */
+     flex-wrap 让展开的详情占满下一行，而不是挤在同一行里。
+     文件卡不在这里渲染：它由 TraceGroup 收集整轮的 files 统一画在折叠组外面（始终可见）。 */
   return (
     <Collapsible
       open={open}
@@ -289,8 +291,6 @@ export default function TraceStrip({ trace }) {
         <Head t={t} />
         <ChevronDown className={cn('size-3.5 shrink-0 text-subtle transition-transform', open && 'rotate-180')} />
       </CollapsibleTrigger>
-      {/* 文件卡：下载链接始终露在外面（用户点一下就下载，不用先展开） */}
-      <FileCards files={t.files} />
       <CollapsibleContent className="w-full">
         <div className="space-y-1.5 rounded-md bg-muted/40 p-2 font-mono text-[11px]">
           {isSub(t) ? <SubCard t={t} /> : null}

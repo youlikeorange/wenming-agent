@@ -5,10 +5,15 @@
 //   · 折叠时一行摘要：步数 + 分类计数（读文件 ×3）+ 失败数（红字）+ ✎ 改动处数 + 累计耗时；
 //   · 进行中自动展开（要看得到正在跑哪一步），跑完自动收起；
 //   · 跑完发现失败**不自动收起**（失败要看得见，这是本项目反复强调的原则）；
-//   · **不设例外**：失败的、有改动的、带文件的条目全在折叠里——摘要把"几步失败、几处改动"
+//   · **不设例外**：失败的、有改动的条目全在折叠里——摘要把"几步失败、几处改动"
 //     如实报出来（用户 2026-10-04 明确要求"错误的有问题的操作不用单独列出来，都折叠"）；
 //   · 只有一条时不折（折了反而多一次点击，摘要并不比那一行信息多）。
 //  逐条怎么画、详情怎么开、行数卡片怎么点，仍然全在 TraceStrip.jsx —— 这里只管"分组"这一层。
+//
+//  **唯一的例外是交付的文件**（2026-10-06）：deliver_file 交出的文件（图片/视频/音频/压缩包）
+//  收集整轮后画在**折叠组外面**——交付物是"产出"不是"过程"，操作组跑完收起后它必须仍然
+//  直接可见（能看图/播视频/点下载）。旧版挂在组内每条追踪条下面，被收起的组整个藏住，
+//  用户实测"交付了图片却什么都没有"。
 import { useEffect, useState } from 'react';
 import { ChevronRight, Wrench } from 'lucide-react';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
@@ -17,7 +22,7 @@ import { Spinner } from '../components/ui/spinner.jsx';
 import { cn } from '../lib/utils.js';
 import { summarizeTraces } from '../lib/trace.js';
 import { fmtCount, fmtDuration } from '../lib/format.js';
-import TraceStrip from './TraceStrip.jsx';
+import TraceStrip, { FileCards } from './TraceStrip.jsx';
 
 /** 摘要里最多列几类；再多的写"等 N 类"，悬停看全部（一行摘要不该自己占满两行） */
 const MAX_CHIPS = 4;
@@ -74,22 +79,35 @@ export default function TraceGroup({ traces, streaming }) {
   useEffect(() => { setOpen((cur) => (streaming ? true : (cur && s.failed > 0))); }, [streaming, s.failed]);
 
   if (!list.length) return null;
-  if (list.length === 1) return <TraceStrip trace={list[0]} />;   // 一条：不折
+  /* 交付的文件（整轮汇总）：始终渲染在折叠组**外面**，收起也可见（见文件头说明） */
+  const files = list.flatMap((t) => (Array.isArray(t.files) ? t.files : []));
+  if (list.length === 1) {
+    return (
+      <>
+        <TraceStrip trace={list[0]} />
+        <FileCards files={files} />
+      </>
+    );   // 一条：不折
+  }
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="marker flex-wrap" role={s.running ? 'status' : undefined}>
-      <CollapsibleTrigger
-        title={open ? '收起这些操作，只看结论' : '展开看每一步的参数与结果'}
-        className="trace-group-head flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left"
-      >
-        <ChevronRight className={cn('size-4 shrink-0 text-subtle transition-transform', open && 'rotate-90')} />
-        <Head s={s} running={s.running > 0} />
-      </CollapsibleTrigger>
-      <CollapsibleContent className="w-full">
-        <div className="trace-rail">
-          {list.map((t, i) => <TraceStrip key={`${i}-${t.label || t.name || ''}`} trace={t} />)}
-        </div>
-      </CollapsibleContent>
-    </Collapsible>
+    <>
+      <Collapsible open={open} onOpenChange={setOpen} className="marker flex-wrap" role={s.running ? 'status' : undefined}>
+        <CollapsibleTrigger
+          title={open ? '收起这些操作，只看结论' : '展开看每一步的参数与结果'}
+          className="trace-group-head flex w-full min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left"
+        >
+          <ChevronRight className={cn('size-4 shrink-0 text-subtle transition-transform', open && 'rotate-90')} />
+          <Head s={s} running={s.running > 0} />
+        </CollapsibleTrigger>
+        <CollapsibleContent className="w-full">
+          <div className="trace-rail">
+            {list.map((t, i) => <TraceStrip key={`${i}-${t.label || t.name || ''}`} trace={t} />)}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+      {/* 交付区在操作组之后：先看"做了什么"（一行摘要），紧跟着就是"交出了什么" */}
+      <FileCards files={files} />
+    </>
   );
 }
