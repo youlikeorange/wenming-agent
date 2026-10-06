@@ -57,6 +57,15 @@ test('★ 历史对账：客户端"落后一轮"时用服务端那份（这是�
   // 客户端没交历史 → 用服务端的
   assert.deepEqual(reconcileHistory(server, null), server);
   assert.deepEqual(reconcileHistory(null, client), client, '服务端没有 → 用客户端的');
+
+  // ★ 重新生成第一轮：客户端把历史剔成**空数组**（slice(0,0)），localEdits=true 时
+  //   必须以客户端为准（空就是空）——旧写法 `localEdits || !cl.length` 的空数组分支
+  //   短路了防线，服务端那份（含要剔除的旧回复）被整份采用，旧回答留在上下文里
+  //   （2026-10-06 用户报的"重新生成没剔除"，实测复现于单轮会话）。
+  assert.deepEqual(reconcileHistory(server, [], { localEdits: true }), [],
+    '★ localEdits=true 且历史被剔空 → 以客户端为准（空）');
+  assert.deepEqual(reconcileHistory(server, [], { localEdits: false }), server,
+    '非编辑场景客户端没给历史 → 仍用服务端的（保守兜底不变）');
 });
 
 /* ============================ onChange 可退订 ============================ */

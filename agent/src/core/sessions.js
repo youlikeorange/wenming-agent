@@ -44,7 +44,14 @@ export function trimTrailingQuestion(history, text) {
 export function reconcileHistory(serverMsgs, clientHistory, { localEdits } = {}) {
   const sv = Array.isArray(serverMsgs) ? serverMsgs : [];
   const cl = Array.isArray(clientHistory) ? clientHistory : [];
-  if (localEdits || !cl.length) return cl.length ? cl : sv;
+  /* **本地显式编辑永远以客户端为准（含"剔空"）**。旧写法 `if (localEdits || !cl.length)
+     return cl.length ? cl : sv` 里，空客户端历史会短路 localEdits——「重新生成第一轮」
+     恰好把历史剔成空数组（slice(0,0)），防线被绕过，服务端那份（含要剔除的旧回复）
+     被整份采用，旧回答就留在了上下文里（2026-10-06 用户报的"重新生成没剔除"）。
+     现在：localEdits=true 一律用客户端（空就是空）；只有"客户端没给历史且不是编辑"
+     （非编辑场景的保守兜底）才用服务端的。 */
+  if (localEdits) return cl;
+  if (!cl.length) return sv;
   if (sv.length <= cl.length) return cl;
   for (let i = 0; i < cl.length; i++) {
     const a = sv[i] || {}, b = cl[i] || {};
