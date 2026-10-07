@@ -110,6 +110,10 @@ export function createToolRunner() {
   const safeCall = (fn) => { try { if (fn) fn(); } catch { /* 宿主回调失败不影响工具执行 */ } };
   const pick = (v, e, body) => (typeof v === 'function' ? v(e, body) : v);
 
+  /** 用户在授权窗点拒绝时回给模型的同一句话（预检与 needGrant 自愈两处共用） */
+  const REFUSED_TEXT = '用户在授权窗口点了拒绝：这条危险命令没有执行。请换更安全的做法；若确实需要，'
+    + '告诉用户这条命令做什么，让用户自己在终端里执行。';
+
   const PLUGIN_ERROR_RULES = [
     {
       when: (e) => !!e.needLogin,
@@ -162,11 +166,7 @@ export function createToolRunner() {
       const chk = await denyCheck(String(args.command));
       if (chk && chk.hit) {
         const auth = await C.askDangerGrant(chk.hit, String(args.command));
-        if (!auth || !auth.ok) {
-          return { ok: false, note: '用户拒绝授权',
-            text: '用户在授权窗口点了拒绝：这条危险命令没有执行。请换更安全的做法；若确实需要，'
-              + '告诉用户这条命令做什么，让用户自己在终端里执行。' };
-        }
+        if (!auth || !auth.ok) return { ok: false, note: '用户拒绝授权', text: REFUSED_TEXT };
         grant = chk.grant || '';
       }
     }
@@ -176,28 +176,40 @@ export function createToolRunner() {
       if (bt) return bt;
     }
     const clean = stripBadArgs(args);
+    const doPost = (g) => post(EP.toolsCall, { name, args: clean, limits: pluginLimits(), grant: g || undefined },
+      { signal: mergedSignal(EXEC_CLIENT_TIMEOUT_MS) });
     let d = {};
     try {
-      d = await post(EP.toolsCall, { name, args: clean, limits: pluginLimits(), grant: grant || undefined },
-        { signal: mergedSignal(EXEC_CLIENT_TIMEOUT_MS) });
+      d = await doPost(grant);
     } catch (e) {
-      // 传输层没拿到响应（断网 / 超时 / 被停止）：与旧实现同一句话
-      if (!(e instanceof ApiError) || e.network || e.aborted) {
-        return { ok: false, note: '请求失败', text: '调用服务端工具失败：' + (e && e.message ? e.message : e) };
-      }
-      // 以下是服务端给了响应体、http.js 按业务失败抛出的情形；原始错误体在 e.payload 里。
-      const body = e.payload || {};
-      for (const rule of PLUGIN_ERROR_RULES) {
-        if (!rule.when(e, body)) continue;
-        if (rule.effect) safeCall(() => rule.effect(e, body));   // effect 一定是有副作用的函数
-        return { ok: false, note: pick(rule.note, e, body), text: pick(rule.text, e, body) };
-      }
-      // 工具**执行了、但结果不成功**（命令非 0 退出 / 超时 / 工具报错）时服务端仍回 HTTP 200，
-      // 真正的输出在 body.text / body.note 里——http.js 把 ok:false 归为业务失败抛出，这里取回来原样回给模型，
-      // 别把输出丢掉换成 "HTTP 200"。
-      if (body.text) return { ok: false, note: body.note || '失败', text: String(body.text) };
-      return { ok: false, note: e.kicked ? '已被顶掉' : '拒绝/失败', text: String(body.error || e.message || ('HTTP ' + e.status)) };
+      const healed = await healNeedGrant(e, name, String(args.command || ''), doPost);
+      return healed || failed(e);
     }
+    return shaped(d);
+  }
+
+  /** needGrant 自愈的守卫+现取预检：不适用（不是 needGrant / 现在不需要票据）返回 null */
+  async function healPrecheck(e, name, cmd) {
+    if (!e || !e.needGrant || name !== 'run_command' || !cmd) return null;
+    const chk = await denyCheck(cmd);
+    return chk && chk.hit ? chk : null;
+  }
+
+  /** needGrant 自愈（2026-10-07 用户报"弹窗与实际执行不同步"）：预检（弹窗决定）与执行闸门是
+   *  **两次独立判定**，之间目标可能变（比如 pkill 的目标进程刚好退出了）→ 执行时被 403 而前面
+   *  没弹过窗，用户只看到一句"需要授权"却无处可点。这里现取一次预检、按需弹窗，带新票据
+   *  **重试一次**——两边由此永远一致。 */
+  async function healNeedGrant(e, name, cmd, doPost) {
+    const chk = await healPrecheck(e, name, cmd);
+    if (!chk) return null;
+    const auth = await C.askDangerGrant(chk.hit, cmd);
+    if (!(auth && auth.ok)) return { ok: false, note: '用户拒绝授权', text: REFUSED_TEXT };
+    try { return shaped(await doPost(chk.grant || '')); }
+    catch (e2) { return failed(e2); }
+  }
+
+  /** 工具结果 → 内核形状（白名单字段与旧实现逐字一致，自愈重试那条路共用同一份组装） */
+  function shaped(d) {
     return {
       ok: d.ok !== false, note: d.note || '完成', text: String(d.text || '(无输出)'),
       /* 可下载文件清单：原样往上传（内核 asResult 会保留它，追踪条据此画文件卡片） */
@@ -211,6 +223,36 @@ export function createToolRunner() {
       /* 任务清单（todo_write 的结果）：null = 已丢弃。同样往上传（内核 asResult 里也放行）。 */
       todo: d.todo !== undefined ? d.todo : undefined,
     };
+  }
+
+  /** 按错误表把 e 翻成模型看得懂的一句话；没命中任何一类返回 null */
+  function ruleResult(e, body) {
+    for (const rule of PLUGIN_ERROR_RULES) {
+      if (!rule.when(e, body)) continue;
+      if (rule.effect) safeCall(() => rule.effect(e, body));   // effect 一定是有副作用的函数
+      return { ok: false, note: pick(rule.note, e, body), text: pick(rule.text, e, body) };
+    }
+    return null;
+  }
+
+  /** 传输层没拿到响应（断网 / 超时 / 被停止）→ 一句话；不是这类返回 null */
+  function transportFail(e) {
+    if (e instanceof ApiError && !e.network && !e.aborted) return null;
+    return { ok: false, note: '请求失败', text: '调用服务端工具失败：' + (e && e.message ? e.message : e) };
+  }
+
+  /** 工具**执行了、但结果不成功**（命令非 0 退出 / 超时 / 工具报错）：服务端仍回 HTTP 200，
+   *  真正的输出在 body.text / body.note 里——http.js 把 ok:false 归为业务失败抛出，
+   *  这里取回来原样回给模型，别把输出丢掉换成 "HTTP 200"。 */
+  function bodyFail(e) {
+    const body = e.payload || {};
+    if (body.text) return { ok: false, note: body.note || '失败', text: String(body.text) };
+    return { ok: false, note: e.kicked ? '已被顶掉' : '拒绝/失败', text: String(body.error || e.message || ('HTTP ' + e.status)) };
+  }
+
+  /** 失败响应 → 模型看得懂的一句话：传输层 → 错误表 → 业务失败正文 → 兜底（两条路共用） */
+  function failed(e) {
+    return transportFail(e) || ruleResult(e, e.payload || {}) || bodyFail(e);
   }
 
   /** 任务清单（todo_write）：走服务端存（按账号与会话），**不占文件/命令预算**——

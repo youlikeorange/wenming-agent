@@ -213,6 +213,9 @@ function ServerInfo({ status }) {
 
         <NoteBox tone="danger" title={`危险命令清单（${deny.length} 条）——命中不等于拒绝`}>
           <p className="mb-1.5">命中这些模式时，界面会弹一次授权窗，你点了「授权执行」才会跑（票据只对这一条命令有效）。</p>
+          <p className="mb-1.5">其中 <span className="font-mono text-[11px]">kill / pkill / killall</span> 有一条例外：
+            <b>杀 agent 自己启动的进程</b>（比如它提交的后台任务、长任务日志里那些）不弹窗、直接放行；
+            目标里混着任何别的进程（你的程序、系统服务、本站自身）才要授权。</p>
           <div className="max-h-40 overflow-y-auto rounded-md border border-destructive/30 bg-card/60 p-2">
             {deny.length ? deny.map((d) => (
               <div key={d} className="truncate font-mono text-[11px] text-muted-foreground">{d}</div>

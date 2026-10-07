@@ -134,18 +134,42 @@ test('killExempt：看不懂的形式一律不放行（保守方向）', () => {
   const stats = SCENE();
   _test.setCmdlineReader((pid) => (pid === 102 ? OWNED_CMDLINE : null));
   assert.equal(killExempt('pkill -v train.py', stats), false, '-v 反转命中集 → 不放');
-  assert.equal(killExempt('pkill -f "a b"', stats), false, '引号空格拆 token → 还原不准 → 不放');
   assert.equal(killExempt('pkill -f "$(reboot)"', stats), false, '子壳一票否决');
-  assert.equal(killExempt('pkill -f x; reboot', stats), false, '多条命令 → 不放');
+  assert.equal(killExempt('pkill -f x; rm -rf /', stats), false, '多段里混进别的危险命令 → 整条不放');
+  assert.equal(killExempt('pkill -f x; reboot', stats), false, '多段里混进 reboot → 不放');
   assert.equal(killExempt('pkill -f nothingmatchesxyz', stats), false, '零命中：看不懂想杀什么 → 弹窗');
   assert.equal(killExempt('pkill -f train.py extra', stats), false, '两个模式 → 不放');
-  assert.equal(killExempt('pkill -f "train.py$"', stats), false, '正则元字符 → 不放');
+  assert.equal(killExempt('pkill -f "a b"', stats), false, '引号空格模式没命中任何目标 → 零命中 → 弹窗');
+  assert.equal(killExempt('pkill -f "train.py$"', stats), false, '锚在行尾但命令行长于它 → 零命中');
   _test.setCmdlineReader(() => null);
   assert.equal(killExempt('pkill -f train.py', stats), false, 'cmdline 全读不到 → 零命中 → 弹窗');
   assert.equal(killExempt('skill -t pts/1', stats), false, 'skill 参数花样多 → 不放');
   assert.equal(killExempt('killall5 -9', stats), false, 'killall5 → 不放');
   assert.equal(killExempt('kill %1', stats), false, '作业号 → 不放');
   assert.equal(killExempt('kill 99999', stats), false, '已消失的 pid → 不放（宁可误拦）');
+});
+
+test('killExempt：真实工作流形态——多段命令、引号空格、正则子集、重定向、后台 &（2026-10-07 二版）', () => {
+  freshRegistries();
+  const stats = SCENE();
+  _test.setCmdlineReader((pid) => (pid === 102 ? OWNED_CMDLINE
+    : pid === 201 ? 'python3 train.py --epochs 9' : null));   // 外人也在跑 train.py
+  /* agent 清理后台任务的真实写法（取证自会话记录）：清理 + 续跑混在一条里 */
+  assert.equal(killExempt('pkill -f "python3 train.py" 2>/dev/null; cd /tmp && setsid nohup uv pip install x > /tmp/l.log 2>&1 < /dev/null & echo 已提交', stats), false,
+    '模式同时命中自启与外人 → 仍然要票');
+  _test.setCmdlineReader((pid) => (pid === 102 ? OWNED_CMDLINE : null));
+  assert.equal(killExempt('pkill -f "python3 train.py" 2>/dev/null; cd /tmp && setsid nohup uv pip install x > /tmp/l.log 2>&1 < /dev/null & echo 已提交', stats), true,
+    '多段 + 引号空格 + 重定向 + 后台 &：其余段无害 → 免票');
+  assert.equal(killExempt('kill 102 2>/dev/null; sleep 3; pkill -f "train.py" 2>/dev/null; echo done', stats), true,
+    'kill pid + sleep + pkill + echo 的多段真实形态');
+  assert.equal(killExempt('cd /tmp; pkill -f train.py; sleep 1; echo 已清理', stats), true,
+    'cd/pkill/sleep/echo 真实形态');
+  assert.equal(killExempt('pkill -f "train.[p]y"', stats), true, '引号内正则字符类（自排除惯用写法）');
+  assert.equal(killExempt('pkill -f train.[p]y', stats), true, '未加引号的简单字符类：glob 与正则语义一致 → 可判定');
+  assert.equal(killExempt('pkill -f "train.py --epochs 3$"', stats), true, '行尾锚 $：与命令行末一致 → 命中自启目标');
+  assert.equal(killExempt('pkill -f "train$"', stats), false, '$VAR 会被 shell 展开 → 看不懂');
+  assert.equal(killExempt('pkill -f train*', stats), false, '未加引号的 * 会被 glob → 看不懂');
+  assert.equal(killExempt('pkill -f "bili_repl[!a]ce"', stats), false, 'glob 的 [!a] 与正则的 [!a] 语义不同 → 不放');
 });
 
 test('killExempt：不杀任何东西的直接放行（kill -l / --help），负 pid 组成员全 owned 也放', () => {

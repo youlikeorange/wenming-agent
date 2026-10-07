@@ -479,6 +479,40 @@ test('ToolRunner：危险命令授权通过 → 携一次性票据执行', async
   } finally { stub.restore(); }
 });
 
+test('ToolRunner：needGrant 自愈——执行时被 403 而没弹过窗 → 现取预检弹窗 → 带票据重试一次', async () => {
+  /* 场景（2026-10-07 用户报"弹窗与实际执行不同步"）：预检说不需要票据（hit:''），
+     执行闸门判定需要（目标状态在两次判定之间变了）→ 旧实现只回一句"需要授权"、没有窗口；
+     新实现现取一次预检、弹窗、带票据重试一次，两边由此一致。 */
+  let callN = 0, checkN = 0;
+  const asked = [];
+  const { budget } = initRunner({
+    askDangerGrant: async (hit, cmd) => { asked.push({ hit, cmd }); return { ok: true }; },
+  });
+  const stub = stubFetch((url) => {
+    if (url.includes('deny-check')) {
+      checkN++;
+      // 预检第一次说"不需要票据"（豁免），执行被拒后第二次预检给出命中+票据
+      return checkN === 1
+        ? jsonRes(200, { ok: true, hit: '', grant: '' })
+        : jsonRes(200, { ok: true, hit: 'pkill', grant: 'g-2' });
+    }
+    callN++;
+    return callN === 1
+      ? jsonRes(403, { ok: false, error: '这条命令需要授权', needGrant: true, hit: 'pkill' })
+      : jsonRes(200, { ok: true, note: '完成', text: '已停止后台任务' });
+  });
+  try {
+    const r = await ToolRunner.runTool({ name: 'run_command', args: { command: 'pkill -f "train.py"' } }, '', budget);
+    assert.equal(r.ok, true, '重试成功 → 有真正的执行结果');
+    assert.equal(r.text, '已停止后台任务', '输出原样带回');
+    assert.equal(asked.length, 1, '补了弹窗（且只弹一次）');
+    assert.equal(callN, 2, '执行请求发了两次（第一次被拒 → 携票据重试）');
+    const retry = stub.seen.filter((s) => s.url.endsWith('/agent/tools/call')).pop();
+    assert.equal(retry.body.grant, 'g-2', '重试带上现取的一次性票据');
+    assert.equal(budget.exec, 1, '重试不重复扣命令预算（第一次没执行）');
+  } finally { stub.restore(); }
+});
+
 test('ToolRunner.callAgentTool：needUnlock → 提示解锁并回调宿主', async () => {
   const { calls } = initRunner();
   const stub = stubFetch(() => jsonRes(403, { error: '需要解锁', needUnlock: true, osUser: 'leo' }));
