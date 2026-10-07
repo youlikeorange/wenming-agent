@@ -6,7 +6,7 @@
  *      （并行工具调用的多条 tool_result、或滤掉空 assistant 后相邻的两条 user，都要合并）；
  *    ③ 流式事件是"带事件名的 SSE"（content_block_start/delta/stop、message_delta…）。
  */
-import { upstreamChat, upstreamModels, refOf } from './transport.js';
+import { upstreamChat, upstreamModels, refOf, resolveTools, errorText } from './transport.js';
 import { sseEvents, safeJson, stopReason } from './sse.js';
 import { textCallSplitter } from './textcalls.js';
 
@@ -34,7 +34,7 @@ export function toMsg(m) {
 }
 
 /** 合并相邻的同角色 user 消息（Anthropic 要求严格交替，否则直接 400） */
-export function mergeAdjacent(msgs) {
+function mergeAdjacent(msgs) {
   const merged = [];
   for (const m of msgs) {
     const prev = merged[merged.length - 1];
@@ -61,10 +61,7 @@ const MIN_THINK_BUDGET = 1024;
 
 export function buildBody(cfg, messages, params, opts = {}) {
   const p = params || {};
-  /* 工具定义的口径兼容：宿主既可能放在 opts.tools（旧口径：opts 里参数与工具混装），
-     也可能放进 params.tools。漏掉的后果很严重——模型收不到工具清单，会把调用**写成正文**
-     （实测：正文里出现 <tool_call><function=read_file>… 的 XML，而界面上没有任何工具卡片）。 */
-  const tools = (opts && opts.tools) || p.tools || [];
+  const tools = resolveTools(p, opts);
   const sys = messages.filter((m) => m.role === 'system').map((m) => m.content).join('\n\n');
   const msgs = mergeAdjacent(messages.filter((m) => m.role !== 'system').map(toMsg));
   // Anthropic 的 max_tokens 是必填项：未设时用 4096
@@ -95,25 +92,20 @@ export async function listModels(cfg, signal) {
   return (d.data || []).map((m) => m.id).filter(Boolean).sort();
 }
 
-/** 上游非 2xx：状态码 + 正文摘要（与 openai.js 同一口径）——
- *  **必须报出来**：不查 r.ok 的话，错误响应被当成"空流"，整轮看起来像模型没说话。 */
-async function errorText(r) {
-  const head = 'HTTP ' + r.status;
-  let txt = '';
-  try { txt = String(await r.text()).slice(0, 800); } catch { return head; }
-  if (!txt.trim()) return head;
-  let msg = txt;
-  try { const o = JSON.parse(txt); msg = (o.error && o.error.message) || o.message || txt; } catch { /* 原样 */ }
-  return head + '：' + String(msg).slice(0, 300);
+/** 上游非 2xx 的正文抽取：认 error.message / message，都不是就原样压缩（与 openai.js 同口径，
+ *  读体与拼头共用 transport.js 的 errorText）——**必须报出来**：不查 r.ok 的话，
+ *  错误响应被当成"空流"，整轮看起来像模型没说话。 */
+function pickMessage(txt) {
+  try {
+    const o = JSON.parse(txt);
+    return String((o.error && o.error.message) || o.message || txt).slice(0, 300);
+  } catch { return txt.slice(0, 300); }
 }
 
 export async function* chat(cfg, messages, params, opts = {}) {
   const body = buildBody(cfg, messages, params, opts);
   const r = await upstreamChat(refOf(cfg), body, opts.signal, opts.sessionId);
-  if (!r.ok) {
-    yield { type: 'error', message: await errorText(r), status: r.status };
-    return;
-  }
+  if (!r.ok) { yield { type: 'error', message: await errorText(r, pickMessage), status: r.status }; return; }
   let usage = null;
   let cur = null;          // 正在累积的 tool_use 块
   let jsonStr = '';

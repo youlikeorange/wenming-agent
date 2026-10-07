@@ -22,7 +22,6 @@ import { LoginDialog } from './features/LoginDialog.jsx';
 import { KickedOverlay } from './features/KickedOverlay.jsx';
 import { Toaster, toast } from './components/ui/toast.jsx';
 import { AlertTriangle } from 'lucide-react';
-import { requestScrollBottom } from './features/chat-utils.js';
 import { useIsPhone } from './lib/useMedia.js';
 
 export default function App() {
@@ -33,12 +32,13 @@ export default function App() {
   const [navOpen, setNavOpen] = useState(false);      // 手机上侧栏抽屉的开关（桌面端常驻，不用它）
   const phone = useIsPhone();
 
-  /* core 层的界面动作回填（openLogin / 需要绑定 / 需要解锁 / 滚动） */
+  /* core 层的界面动作回填（openLogin / 需要绑定 / 需要解锁）。
+     （hooks.scrollBottom 的接线已删：它从未被调用——滚动意图由 Composer 直接置位，
+     ChatView 的 layout effect 消费，见 chat-utils 的 requestScrollBottom/takeScrollBottom。） */
   useEffect(() => {
     hooks.openLogin = (hint) => { setLoginHint(hint || ''); setLoginOpen(true); };
     hooks.onNeedBind = () => { openDrawer('binding'); toast('先在设置里绑定一个本机账号：Agent 以它的权限做事', 'info'); };
     hooks.onNeedUnlock = (osUser) => { openDrawer('binding'); toast(`解锁 ${osUser || '绑定账号'} 后才能执行命令`, 'info'); };
-    hooks.scrollBottom = () => requestScrollBottom();
   }, []);
 
   /* 首次进入：确保有一个会话对象（空状态也是"在某个会话里"） */

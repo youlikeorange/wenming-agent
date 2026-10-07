@@ -13,7 +13,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../componen
 import JumpButton from './JumpButton.jsx';
 import Message, { undoRevOf } from './Message.jsx';
 import SessionOutline from './SessionOutline.jsx';
-import { handleCodeCopy, requestScrollBottom, takeScrollBottom } from './chat-utils.js';
+import { handleCodeCopy, takeScrollBottom } from './chat-utils.js';
 
 /* 欢迎页的建议 chips：点一下把整句填进输入框（不直接发送，用户还能改）。
    needSearch 那条跟着内置联网搜索的开关走（「权限与工具 → 联网搜索」）：关掉之后模型连
@@ -136,13 +136,9 @@ export default function ChatView() {
   const sess = (st.sessions || []).find((s) => s.id === st.activeSessId) || null;
 
   /* 滚动策略：只有"用户发送 / 插话"才滚到底。
-     session.js 的 send() 会调 hooks.scrollBottom()，Composer 插话时直接调用 chat-utils 的
-     requestScrollBottom()——两者都只是置一个意图位；这里在 DOM 更新后的 layout effect 里消费它。
-     生成中的每个 chunk 只改内容、不置位，所以绝不自动吸底（用户往上翻不会被拽回来）。 */
-  useEffect(() => {
-    hooks.scrollBottom = requestScrollBottom;
-    return () => { hooks.scrollBottom = () => {}; };
-  }, []);
+     Composer 直接调 chat-utils 的 requestScrollBottom() 置意图位；这里的 layout effect 消费它。
+     生成中的每个 chunk 只改内容、不置位，所以绝不自动吸底（用户往上翻不会被拽回来）。
+     （hooks.scrollBottom 的接线已删：消费方从未通过钩子调用它——2026-10-06 审计。） */
   useLayoutEffect(() => {
     if (!takeScrollBottom()) return;
     const el = scrollRef.current;

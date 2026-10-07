@@ -18,24 +18,11 @@ import { get, post } from '../../core/http.js';
 import { Memory } from '../../core/memory.js';
 import { Store } from '../../core/store.js';
 import { selectSession, newSession } from './session.js';
-import { adoptProject, guardStreaming, hooks } from './host.js';
+import { adoptProject, guardStreaming, hooks, fetchProjectMemory } from './host.js';
+import { postToolsField } from './settings.js';
 import { toast } from '../components/ui/toast.jsx';
 
 const byId = (id) => (state.projects || []).find((p) => p.id === id) || null;
-
-/** 读某个项目的记忆条目（服务端账号目录里的 Markdown 文件夹，唯一真源）。
- *  失败返回 **null**（调用方据此放弃这次切换，绝不拿空数组当"这个项目没有记忆"——
- *  那会把服务端那份覆盖成空的）。quiet = 不弹提示（后台刷新用）。 */
-async function fetchProjectMemory(id, { quiet } = {}) {
-  if (!id) return [];
-  try {
-    const d = await get(`${EP.projectsMemory}?id=${encodeURIComponent(id)}`, { timeoutMs: 10000 });
-    return Array.isArray(d.entries) ? d.entries : [];
-  } catch (e) {
-    if (!quiet) toast('读取项目记忆失败：' + e.message, 'err');
-    return null;
-  }
-}
 
 /** 把"当前项目"写到服务端（projects.json 的 current）。返回是否成功。 */
 async function setServerCurrent(id) {
@@ -204,21 +191,19 @@ export async function browseDir(path) {
   return get(`${EP.projectsBrowse}${q}`, { timeoutMs: 10000 });
 }
 
+/** 在浏览到的目录里新建一个文件夹（选择器「新建文件夹」用），返回新目录的绝对路径。
+ *  闸门在服务端（绑定 + 可访问目录 + 起点），前端不自己判。 */
+export async function makeDir(parent, name) {
+  const r = await post(EP.projectMkdir, { parent: parent || '', name }, { timeoutMs: 10000 });
+  return r.path;
+}
+
 /** 改项目起点（默认 /media/leo/DATA/workspace）：只约束"项目放哪"，不影响 agent 能读写哪些目录 */
 export async function setStart(path) {
   const p = String(path || '').trim();
   if (!p) { toast('先填一个目录', 'err'); return false; }
-  try {
-    const d = await post(EP.toolsStart, { action: 'start', path: p }, { timeoutMs: 10000 });
-    const settings = Object.assign({}, state.settings, {
-      tools: Object.assign({}, (state.settings && state.settings.tools) || {}, { start: d.start }),
-    });
-    patch({ settings });
-    const st = state.agentStatus;
-    if (st) patch({ agentStatus: Object.assign({}, st, { start: d.start }) });
-    toast('起点已更新：' + d.start, 'ok');
-    return true;
-  } catch (e) { toast('改起点失败：' + e.message, 'err'); return false; }
+  return postToolsField(EP.toolsStart, { action: 'start', path: p }, 'start',
+    (v) => '起点已更新：' + v, '改起点失败：');
 }
 
 /* ============================ 归档（存档） ============================ */

@@ -1,4 +1,4 @@
-/* ui/lib/trace.js —— 追踪条条目的**纯函数**：规范化、分类、收尾合并、折叠摘要（可在 Node 下单测）
+/* ui/lib/trace.js —— 追踪条条目的**纯函数**：分类、规范化、折叠摘要（可在 Node 下单测）
  *
  *  为什么单独一个模块：追踪条条目的字段语义原先靠**中文文案**当判据——
  *  TraceStrip 用 `t.note === '进行中'` 判断在跑、用 `t.note === '插话'` 判断插话，
@@ -12,7 +12,7 @@
  *            'compact' 压缩（上下文压缩的中间态）
  *    state : 'running' | 'done'（缺省 = done）
  *
- *  旧会话（磁盘上的历史消息）没有这两个字段，normalizeTrace 会按文案**回推一次**，
+ *  旧会话（磁盘上的历史消息）没有这两个字段，traceRunning 会按文案**回推一次**，
  *  这样界面代码里再也不需要出现 `note === '进行中'` 这种判断。
  */
 
@@ -24,26 +24,9 @@ export const traceKind = (t) => (t && KINDS.has(t.kind) ? t.kind : 'tool');
 /** 是否还在进行中：优先看 state；旧数据（没有 state）按当时的文案回推 */
 export const traceRunning = (t) => !!(t && (t.state ? t.state === 'running' : t.note === '进行中'));
 
-/** 规范化一条目：补上 kind/state 两个字段（不动其它字段，返回新对象） */
-export function normalizeTrace(t) {
-  const src = t || {};
-  return Object.assign({}, src, {
-    kind: traceKind(src),
-    state: traceRunning(src) ? 'running' : 'done',
-  });
-}
+/* normalizeTrace / mergeTrace 已删（2026-10-06 审计）："收尾合并"随循环上服务端后生产零调用，
+   只有单测在吃。保留 traceRunning/traceKind 的文案回推（TraceStrip 还在用）。 */
 
-/**
- * 收尾时把"实时列表"与"内核记录"合并成最终要落盘的那一份。
- *
- *  · live：界面上实时长出来的条目（工具条 + 提示条 + 插话条，顺序即当时看到的顺序）
- *  · core：内核 trace（只有工具记录，但结果/耗时口径与落盘一致）
- *  · steering：本次插话（统一放到最前面，与 live 里的重复条目只留一份）
- *
- *  规则：插话条跳过（由 steering 统一给）；提示条原样保留在它出现的位置；
- *  工具条换成内核那份（按 label 对齐，保持先后顺序）。
- *  （原实现内联在 session.js 的 send() 里，用 note === '插话' 过滤，见文件头注释。）
- */
 /* ==================== 折叠摘要（features/TraceGroup.jsx 用） ==================== */
 
 /* 工具名 → 摘要里的短名。认不出的名字退回标签里「：」前的那一段（labelOf 生成的标签都是
@@ -113,20 +96,4 @@ export function linesOf(lines) {
     added: Math.max(0, Math.floor(Number(l.added) || 0)),
     removed: Math.max(0, Math.floor(Number(l.removed) || 0)),
   };
-}
-
-export function mergeTrace(live, core, steering) {
-  const l = (Array.isArray(live) ? live : []).map(normalizeTrace);
-  const c = (Array.isArray(core) ? core : []).map(normalizeTrace);
-  const s = (Array.isArray(steering) ? steering : []).map(normalizeTrace);
-  const out = [];
-  let ti = 0;
-  for (const t of l) {
-    if (t.kind === 'steer') continue;
-    if (t.kind === 'notice') { out.push(t); continue; }
-    const hit = c.findIndex((k, i) => i >= ti && k.label === t.label);
-    if (hit >= 0) { out.push(c[hit]); ti = hit + 1; } else out.push(t);
-  }
-  out.push(...c.slice(ti));
-  return [...s, ...out];
 }

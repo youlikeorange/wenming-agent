@@ -7,7 +7,7 @@
  *    · 每一条卖点都必须是**这个代码库里真实存在的能力**（能指出实现文件），不许写成愿景；
  *    · 一句话说清"和别人比，差别在哪"，不堆形容词——宣传归宣传，别骗人。
  */
-import { SlidersHorizontal, PlugZap, ShieldCheck, CloudOff, GitCompareArrows, HardDrive, Layers, Wand2 } from 'lucide-react';
+import { SlidersHorizontal, PlugZap, ShieldCheck, CloudOff, GitCompareArrows, HardDrive, Layers, Wand2, UserCheck, TicketCheck, TimerReset } from 'lucide-react';
 
 export const BRAND = {
   /* 名字：启 = 说得清、做得实（提示词与工具都摊开）；明 = 每一步都看得见、撤得回。
@@ -45,6 +45,15 @@ export const HIGHLIGHTS = [
   { icon: Wand2, title: '技能可写、可导入', weight: 2,
     desc: '技能（Skills）按需加载：模型能自己写一份并登记，也能直接把现成的 SKILL.md 导进来；每份技能的正文同样可见可改。',
     from: 'core/tool-runner.js（skill_* / skills/import）' },
+  { icon: UserCheck, title: '绑定即授权：以你的身份干活', weight: 1,
+    desc: '设置里绑定一个本机系统账号（输一次密码解锁，密码只进内存），之后文件与命令都以**那个账号的真实权限**执行——模型能碰到什么，你在系统里就是什么，不多一分。',
+    from: 'lib/agent/session.js + osaccess.js（绑定/解锁/换身份执行）' },
+  { icon: TicketCheck, title: '危险命令要票据，清单摊开看', weight: 1,
+    desc: '危险操作清单在面板里**逐条可见**；命中即弹授权窗，签一张与命令全文绑定的一次性票据——改一个字符都不认，模型自己拿不到，只有你点过「授权执行」才放行。',
+    from: 'lib/agent/deny.js（清单）+ grants.js（一次性票据）' },
+  { icon: TimerReset, title: '卡死自己会挣脱：超时与循环保护', weight: 1,
+    desc: '单次调用最高时长（面板可设）到点自动中断重调；模型在思考里原地打转（反复输出同样内容）也会被检出、中断重来——过程都写在追踪条上，最终回答不会被一个死循环吊住。',
+    from: 'core/thinkloop.js + agent.js 调用保护（call_timeout_sec）' },
 ];
 
 /** 首页只展示 weight=1 的那几条；完整清单在「为什么选它」对话框里 */

@@ -77,9 +77,6 @@ async function loadFileDiff() {
   settleDiff(err, d);
 }
 
-/** 重新拉一次当前文件的两侧内容（"仅恢复这一个"成功之后用：两侧应当变得一致） */
-export const reloadFileDiff = () => loadFileDiff();
-
 /** 恢复结果里有失败 → 提示 + 闸门引导；返回 true 表示"这一趟没有成功" */
 function reportRestoreFails(d) {
   const fails = ((d && d.result) || {}).failed || [];

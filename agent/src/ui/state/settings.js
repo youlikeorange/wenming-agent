@@ -179,18 +179,27 @@ export function clearModelOverrides(scope) {
 
 /* ============================ 工具配置 ============================ */
 
-export async function setRoots(action, payload) {
+/** 工具配置的公共三步：POST 服务端 → settings.tools[field] 与 agentStatus 同步 → toast。
+ *  setRoots 与 projects.js 的 setStart 原先各抄一份同形代码（2026-10-06 收敛）；
+ *  projects.js 从这里 import（settings 不依赖 projects，无环）。 */
+export async function postToolsField(ep, body, field, okText, errPrefix) {
   try {
-    const d = await post(EP.toolsRoots, Object.assign({ action }, payload), { timeoutMs: 10000 });
+    const d = await post(ep, body, { timeoutMs: 10000 });
     const settings = copy(S());
-    settings.tools = Object.assign({}, settings.tools, { roots: d.roots });
+    settings.tools = Object.assign({}, settings.tools, { [field]: d[field] });
     patch({ settings });
     const st = state.agentStatus;
-    if (st) patch({ agentStatus: Object.assign({}, st, { roots: d.roots }) });
-    toast('可访问目录已更新', 'ok');
+    if (st) patch({ agentStatus: Object.assign({}, st, { [field]: d[field] }) });
+    toast(typeof okText === 'function' ? okText(d[field]) : okText, 'ok');
+    return true;
   } catch (e) {
-    toast('保存可访问目录失败：' + e.message, 'err');
+    toast(errPrefix + e.message, 'err');
+    return false;
   }
+}
+
+export function setRoots(action, payload) {
+  return postToolsField(EP.toolsRoots, Object.assign({ action }, payload), 'roots', '可访问目录已更新', '保存可访问目录失败：');
 }
 
 /* ============================ 本机账号绑定 ============================ */

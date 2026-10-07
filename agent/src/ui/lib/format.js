@@ -99,13 +99,15 @@ export function fmtDuration(ms) {
   return `${Math.floor(m / 60)} 小时 ${m % 60} 分`;
 }
 
-/** 一轮的元信息：tok/s · tokens · prompt · 耗时（拿不到 usage 时按字数估算 tokens） */
+/** 一轮的元信息：tok/s · tokens · prompt · 耗时（拿不到 usage 时按字数估算 tokens）
+ *  数值是**本轮累计**口径（2026-10-07）：内核把各次模型调用的 usage 累计好了再给过来，
+ *  tok/s 的两个数也同为累计（总输出 / 总生成时长）= 这一轮的平均生成速度。 */
 export function statsParts(stats, wallMs, content) {
   const out = [];
   if (stats && stats.eval_count) {
     const n = stats.eval_count;
-    /* tok/s 的分母只能是**生成耗时**：优先内核实测的 gen_ms（第一个增量 → 最后一个增量，
-       见 core/agent.js 的 readRound），其次上游给的 eval_duration（Ollama 那类会带）。
+    /* tok/s 的分母只能是**生成耗时**：优先内核实测的 gen_ms（累计：第一个增量 → 最后一个增量
+       逐轮相加，见 core/agent.js），其次上游给的 eval_duration（Ollama 那类会带）。
        两个都没有就**不显示 tok/s**——旧实现回落到整轮 wallMs，把排队、首字节、工具执行全算进去，
        实测一轮 8 tokens 跑了 30 秒（含两次工具调用）显示成 0.3 tok/s，那是假数不是速度。 */
     const secs = Number(stats.gen_ms) > 0 ? Number(stats.gen_ms) / 1000

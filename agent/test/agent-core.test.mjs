@@ -16,6 +16,7 @@ function fakeStream(script) {
     if (step.content) yield { type: 'content', text: step.content };
     if (step.calls) yield { type: 'tool_calls', calls: step.calls };
     if (step.stop) yield { type: 'stop', reason: step.stop };
+    if (step.stats) yield { type: 'stats', raw: step.stats };
   };
 }
 const call = (id, name, args) => ({ id, name, args });
@@ -74,6 +75,24 @@ test('场景 C：外循环 follow-up（最终回答后再跑一轮）', async ()
   });
   assert.equal(out.content, '第一次回答追问答复', '外循环的追加回答拼进结果（实际：' + out.content + '）');
   assert.equal(rounds2, 2, 'getFollowUps 取空后外循环终止（调用次数 ' + rounds2 + '）');
+});
+
+test('场景 C2：上游 usage（stats 事件）经 onStats 钩子实时交给宿主（2026-10-06）', async () => {
+  const seen = [];
+  const out = await Agent.run({
+    maxRounds: 3,
+    stream: fakeStream([
+      { content: '先说一半', stats: { eval_count: 12, prompt_eval_count: 345 } },
+      { content: '，再说另一半。', stop: 'stop' },
+    ]),
+    getSteering: () => [],
+    getFollowUps: () => [],
+    runTool: async () => ({ ok: true, text: 'ok' }),
+    hooks: { onStats: (raw) => seen.push(raw) },
+  });
+  assert.deepEqual(seen, [{ eval_count: 12, prompt_eval_count: 345 }],
+    '★ onStats 在事件到达的那一刻收到上游原样 raw（不等收尾）');
+  assert.equal(out.stats.eval_count, 12, '收尾 stats 仍是它（gen_ms 是读流后附加的）');
 });
 
 test('场景 D：截断保护与 notice kind', async () => {

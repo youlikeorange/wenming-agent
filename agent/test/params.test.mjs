@@ -250,3 +250,17 @@ test('★ 结果与记录：追踪条上限的默认值/范围写在 schema（40
   assert.equal(TOOL_FIELDS.plugin_fs_write_kb.def, 4096, '单次写入默认 4MB（服务端硬上限同值）');
   assert.equal(TOOL_FIELDS.plugin_fs_nodes.def, 800, '目录树/找文件默认 800 项（服务端硬上限同值）');
 });
+
+test('登记表完整性：agent-defs 引用的每条提示词都存在且非空（防"空描述注册给模型"）', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { Prompts } = await import('../src/core/prompts.js');
+  const src = readFileSync(new URL('../src/core/agent-defs.js', import.meta.url), 'utf8');
+  // agent-defs 里的引用有两种写法：Prompts.text('…') 与别名 T('…')（2026-10-06 审计曾因别名漏检，
+  // 漏掉了 tool.memory_write.schema.desc / tool.spawn_agent.schema.desc 两条缺失）
+  const ids = [...src.matchAll(/\b(?:Prompts\.text|T)\('([^']+)'\)/g)].map((m) => m[1]);
+  assert.ok(ids.length >= 10, '至少应扫到 10 条引用（扫描失效时这条会先报警）');
+  for (const id of ids) {
+    const t = Prompts.text(id);
+    assert.ok(t && t.trim(), `登记表缺少条目或正文为空：${id}（工具会以空描述注册给模型）`);
+  }
+});

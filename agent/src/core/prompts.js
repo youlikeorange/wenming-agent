@@ -32,8 +32,10 @@
 
 /* ============================ 内置默认（全部可见可改） ============================ */
 
-/** 主系统提示词（原先只此一条是"提示词"，现在它是登记表里的 system.base） */
-const SYSTEM_DEFAULT = '你是 Qwen，一个乐于助人的中文助手。请用简洁、准确的语言回答问题。';
+/** 主系统提示词（原先只此一条是"提示词"，现在它是登记表里的 system.base）。
+ *  2026-10-06：人设从遗留的"Qwen"改为本站智能体的名字「启明」；能力范围一句话带过。 */
+const SYSTEM_DEFAULT = '你是「启明」，一个运行在用户本机的智能体助手，能通过工具读写文件、执行命令、检索联网信息。'
+  + '请用简洁、准确的语言回答问题。';
 
 /** 预设（原「系统提示词」里的快选 chips；现在只是把一段文本填进 system.base 的快捷方式） */
 const SYSTEM_PRESETS = [
@@ -56,6 +58,17 @@ const DEFAULTS = [
   /* ---- 1. system：按顺序拼接成一条 system 消息 ---- */
   { id: 'system.base', group: 'system', kind: 'system', name: '主系统提示词',
     desc: '整个 system 消息的第一块，定义角色与总体要求。', text: SYSTEM_DEFAULT },
+
+  { id: 'system.output', group: 'system', kind: 'system', name: '回答格式约定',
+    desc: '默认的回答格式约定（中文、Markdown、代码块标注语言、先结论后依据、交付走 deliver_file）。'
+      + '不需要时可以整条关闭或改写。', 
+    text: '回答的默认格式：\n'
+      + '· 用中文回答（用户用其他语言提问时跟随用户的语言）；\n'
+      + '· 代码、命令、文件路径、报错原文用 Markdown 代码块包起来，代码块首行标注语言；\n'
+      + '· 并列信息用列表、多维度对比用表格，不要把大段信息挤成一行；\n'
+      + '· 长回答先给结论再给依据，必要时用小标题分节；\n'
+      + '· 引用文件写完整路径，引用检索结果附链接；\n'
+      + '· 生成了文件（报告/图片/音视频/压缩包…）就用 deliver_file 交付，不要把长内容整篇贴进回答。' },
 
   { id: 'system.agent_rules', group: 'system', kind: 'system', name: 'Agent 行为准则',
     desc: '工具循环的通用约定（什么时候调用工具、怎么收尾）。参照 Pi 的 agent harness 约定，可整段改写或关掉。',
@@ -129,6 +142,12 @@ const DEFAULTS = [
       + '写法：title 用一句能认出来的短标题（同标题会合并更新，不会重复堆积），content 写清事实本身'
       + '（必要的背景 + 结论），tags 可选。不要记录寒暄、过程性废话、可以从上下文直接看到的内容；'
       + '不确定是否长期有效时先用 session。**同一件事只写一处**：写成了技能就不要在这里再抄一遍。' },
+  { id: 'tool.memory_write.schema.desc', group: 'tools', kind: 'schema', name: 'memory_write 的 schema 描述',
+    desc: '工具定义（function.description）里的一句话描述。2026-10-06 审计补缺：这条原先不存在，'
+      + 'memory_write 一直以**空描述**注册给模型（agent-defs 引用了不存在的 id）。',
+    text: '把值得长期保留的**事实**写进记忆（scope：session=只在本对话；global=跨会话跟人走；'
+      + 'project=记在当前项目上）。同标题会合并更新而不是重复堆积；可复用的**做法**请写成技能'
+      + '（skill_write），不要记成记忆。' },
   { id: 'tool.memory_read.schema.desc', group: 'tools', kind: 'schema', name: 'memory_read 的 schema 描述',
     desc: '按 id 或标题取回一条记忆的正文。', text: '按 id 或标题读取一条记忆的完整内容（系统提示里只给了索引与摘要）。' },
   { id: 'tool.memory_search.schema.desc', group: 'tools', kind: 'schema', name: 'memory_search 的 schema 描述',
@@ -254,13 +273,14 @@ const DEFAULTS = [
       + '· 长时间**常驻的服务**（网站、ComfyUI 服务器本身等）仍请用户自己在终端里起；'
       + '你负责的是提交任务、查进度、取结果。\n'
       + '· 输出有上限，被截断时改用更精确的命令（grep/head/tail）。\n'
-      + '· 危险命令（删根、格式化磁盘、关机重启、写块设备等）不会直接执行：界面会弹授权窗口，用户点「授权执行」后才运行；被拒绝就换更安全的做法，不要原样重试。用户明确要求删文件时优先用 delete_path。\n'
+      + '· 危险命令（删根、格式化磁盘、关机重启、写块设备等）不会直接执行：界面会弹授权窗口，用户点「授权执行」后才运行；被拒绝就换更安全的做法，不要原样重试。用户明确要求删文件时优先用 delete_path。'
+      + '例外：kill/pkill 杀的是**你自己启动的进程**（刚提交的后台任务及其子进程）时不需要授权，直接收尾即可；目标里只要混着不是你启动的进程（用户的程序、系统服务、本站进程）就仍会弹窗。\n'
       + '· 执行前把"要做什么、为什么"用一句话说清楚；失败时看 stderr 与退出码，不要重复同样的命令。' },
   { id: 'tool.run_command.schema.desc', group: 'tools', kind: 'schema', name: 'run_command 的 schema 描述',
     desc: '执行 shell 命令（cwd 必须在允许目录内；危险命令需用户授权）。',
     text: '执行一条 shell 命令（/bin/sh -c），返回退出码、stdout 与 stderr。以用户绑定的本机账号身份运行（能做到什么由那个账号在系统里的权限决定）；cwd 可选，默认是允许目录的第一个。'
       + '超时会**杀掉整条命令及其所有子进程**（默认 60 秒；可传 timeout_sec，但不超过面板设置，服务端硬上限默认 600 秒）；几分钟以上的任务要用「后台提交 + wait 等待 + 分次查询」，不要在前台等到完成（做法见命令行工具的使用说明）。'
-      + '危险命令不会直接执行：界面会弹授权窗口，用户授权后才运行。' },
+      + '危险命令不会直接执行：界面会弹授权窗口，用户授权后才运行；杀你自己启动的进程（如后台任务）不需要授权。' },
   { id: 'tool.wait.schema.desc', group: 'tools', kind: 'schema', name: 'wait 的 schema 描述',
     desc: '等待一段时间再继续（长任务轮询进度的中间步骤）。',
     text: '原地等待指定的秒数后返回（不占命令条数、不需要确认）。只用于长任务的「提交后台 → 等待 → 查进度」循环：'
@@ -327,11 +347,29 @@ const DEFAULTS = [
     text: '写或更新你的任务清单（**全量覆盖**：每次都要给整份清单，不是只给变化的那几项），用户在界面右上角能看到它。'
       + '做多步任务前先列一份（每项一句话、状态 pending），做完一项就把对应项标成 completed；'
       + '全部完成后清单保留在右上角，开新任务就写一份新的覆盖它，不再需要显示时写空清单清空。简单的一次性问题不要用。' },
+  { id: 'tool.spawn_agent.schema.desc', group: 'tools', kind: 'schema', name: 'spawn_agent 的 schema 描述',
+    desc: '工具定义（function.description）里的一句话描述。2026-10-06 审计补缺：agent-defs 引用了'
+      + '这条不存在的 id，spawn_agent 一直以**空描述**注册给模型。',
+    text: '派一个**子智能体**去完成一件独立的事：它跑在自己的一段上下文里、自己调工具，'
+      + '只把结论带回主对话。适合"要翻很多文件、查很多资料才能回答"的子任务——主对话不必装下它的中间过程。'
+      + 'task 里用一两句话写清做什么、要什么结果（它看不到你们这段对话）。' },
+  { id: 'tool.spawn_agent.desc', group: 'tools', kind: 'tool', name: '子智能体 spawn_agent',
+    desc: '子智能体的注入说明（只在「子智能体」开关开启时注入，见 assemble.js 的闸门）：'
+      + '什么时候值得派、task 怎么写、默认只读、结论要核对。',
+    text: '你可以用 spawn_agent 把一件独立的事交给子智能体去跑：\n'
+      + '· 适合派出去的：要读大量文件/检索很多资料才能回答的子问题、可以并行开展的独立调查——'
+      + '它翻过的中间内容不占你的上下文，只有结论回来；\n'
+      + '· 不适合的：需要与用户反复确认的事（它无法提问）、一两步就有答案的小事、'
+      + '依赖"只有这段对话里才有"的隐性上下文的任务——派的时候把这些背景写进 task；\n'
+      + '· task 要**自包含**：目标、范围、要回什么结果（路径/数字/结论），并写明"做好就停，别扩大范围"；\n'
+      + '· 子智能体默认**只读**（读文件/检索/查记忆）；allow_write=true 也只在用户面板允许时生效，'
+      + '写类操作照样要过确认框；\n'
+      + '· 它的结论作为工具结果原样交给你：核对无误后再转述给用户，别照单全收。' },
   { id: 'plugin.access.full.note', group: 'tools', kind: 'helper', name: '「完全访问」档位的附加说明',
     desc: '访问级别设为「完全访问」时追加注入的一句：让模型知道不必再逐条征求同意（其余档位不注入，由确认框负责）。',
     text: '用户已把访问级别设为「完全访问」：读写文件、执行命令、删除都不需要再逐条征求同意——直接把事做完并说明结果；'
       + '只有在这类操作明显超出当前任务、或用户明确要求先说一声时，才停下来问。'
-      + '唯一例外：危险命令（删根、重启、写块设备等）执行前仍会弹授权窗口，等用户点头。' },
+      + '唯一例外：危险命令（删根、重启、写块设备等）执行前仍会弹授权窗口，等用户点头（杀你自己启动的进程不算，直接执行）。' },
   { id: 'plugin.need_login.note', group: 'tools', kind: 'helper', name: '未登录时注入的说明',
     desc: '未登录时插件工具不注册给模型，同时追加这一句，让模型直接用语言回答，而不是空转或反复尝试。',
     text: '用户当前**没有登录**（本站用文档站账号登录），所以文件、目录、命令行这类插件工具本轮不可用'
@@ -433,6 +471,14 @@ const DEFAULTS = [
       + '明确给出"确实要停就说明原因"的台阶，避免把它顶成死循环。{n}=未完成项数。',
     text: '【系统提醒】你的任务清单还有 {n} 项没完成。请继续做下一步（调用工具）；'
       + '如果确实要停下（例如在等用户确认、或清单本身已过时），就直接说明情况，不要再调用工具。' },
+  { id: 'loop.call_timeout', group: 'loop', kind: 'loop', name: '单次调用超时后的重试提示',
+    desc: '一次模型调用超过「单次调用最高时长」被中断时的提示（立即重调，最多 2 次；'
+      + '之后仍超时就报错收尾）。实时打到追踪条上，用户看得见为什么"卡了一下又活了"。',
+    text: '本次模型调用超过最高时长，已中断并重新调用（{n}/{max}）…' },
+  { id: 'loop.think_loop', group: 'loop', kind: 'loop', name: '思考循环检测的中断提示',
+    desc: '检测到模型思考流在原地打转（同一内容反复输出）时，中断本次调用并立即重调'
+      + '（最多 2 次；之后放开检测让它跑，由最高时长兜底）。',
+    text: '检测到模型思考在重复输出（疑似循环），已中断并重新调用（{n}/{max}）…' },
 
   /* ---- 4. compact：上下文压缩（Pi 的 compaction，提示词同样可改） ---- */
   { id: 'compact.prompt', group: 'compact', kind: 'compact', name: '压缩提示词',
@@ -456,6 +502,31 @@ const DEFAULTS = [
 ];
 
 /* ============================ 实例 ============================ */
+
+/** 循环内文案：**texts 键 ↔ 登记表条目 id 的唯一映射**（2026-10-06 审计收敛）。
+ *  两端宿主（run-loop.js 的 loopTexts 注入）与内核兜底（agent.js 的 loopText）都用这一张表——
+ *  旧实现里 run-loop 一张表、agent.js 一份手抄兜底，兜底与登记表已分叉三条。 */
+export const LOOP_TEXT_IDS = {
+  truncated: 'loop.truncated',          // 截断保护：工具调用未执行
+  guard: 'loop.guard',                  // 重复调用保护
+  maxRounds: 'loop.max_rounds',         // 轮次用尽
+  noContent: 'loop.no_content',         // 空回答重试提醒
+  textCalls: 'loop.text_tool_calls',    // 正文型工具调用认回
+  truncatedAnswer: 'loop.truncated_answer', // 回答截断提示
+  retry: 'loop.retry',                  // 上游出错重试
+  interrupted: 'loop.interrupted',      // 响应被掐断的续轮提醒
+  todoPending: 'loop.todo_pending',     // 清单没做完就收尾的提醒
+  callTimeout: 'loop.call_timeout',     // 单次调用超时后的中断重调提示
+  thinkLoop: 'loop.think_loop',         // 思考循环检测的中断重调提示
+};
+
+/** 循环内文案的**出厂兜底**（texts 键 → DEFAULTS 里的默认正文）。
+ *  取 DEFAULTS 而不是默认实例的当前值：agent.js 不认识任何实例（一份实例一份闭包的纪律），
+ *  兜底只服务"宿主没注入 texts"的裸调路径；生产两端都会全量注入，触发不到。 */
+const DEFAULT_LOOP_TEXTS = Object.fromEntries(DEFAULTS
+  .filter((d) => Object.values(LOOP_TEXT_IDS).includes(d.id))
+  .map((d) => [d.id, d.text || '']));
+export const defaultLoopText = (key) => DEFAULT_LOOP_TEXTS[LOOP_TEXT_IDS[key]] || '';
 
 /** 造一份独立的提示词登记表实例（覆盖项 / 技能 / 自定义条目 / 订阅者都在闭包里）。
  *  一份实例 = 一轮运行看到的提示词，于是多段运行可以并行：原先模块级单例会被后一轮的

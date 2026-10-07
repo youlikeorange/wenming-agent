@@ -9,6 +9,8 @@ import { TEMPLATES, PROTOCOL_LIST, getProtocol } from '../../../core/protocol.js
 import { parseExtraBody } from '../../../core/params.js';
 import { cn } from '../../lib/utils.js';
 import { Badge } from '../../components/ui/badge.jsx';
+/* 表单标签的统一类串（本文件 9 处逐字重复，2026-10-06 收敛为本文件常量） */
+const LABEL_CLS = 'mb-1.5 block text-xs text-muted-foreground';
 import { Button } from '../../components/ui/button.jsx';
 import { FieldDesc, SectionTitle } from '../../components/ui/field.jsx';
 import { ImeInput } from '../../components/ui/ime-field.jsx';
@@ -179,11 +181,11 @@ function NameTypeFields({ d }) {
   return (
     <div className="grid grid-cols-2 gap-3">
       <div>
-        <Label htmlFor="p-name" className="mb-1.5 block text-xs text-muted-foreground">名称</Label>
+        <Label htmlFor="p-name" className={LABEL_CLS}>名称</Label>
         <ImeInput id="p-name" value={d.name} onChange={(e) => d.setName(e.target.value)} placeholder="例：本机 Qwen" />
       </div>
       <div>
-        <Label htmlFor="p-type" className="mb-1.5 block text-xs text-muted-foreground">协议类型</Label>
+        <Label htmlFor="p-type" className={LABEL_CLS}>协议类型</Label>
         <Select value={d.type} onValueChange={d.setType}>
           <SelectTrigger id="p-type"><SelectValue /></SelectTrigger>
           <SelectContent>
@@ -199,12 +201,12 @@ function ModelKeyFields({ d, provider }) {
   return (
     <div className="grid grid-cols-2 gap-3">
       <div>
-        <Label htmlFor="p-model" className="mb-1.5 block text-xs text-muted-foreground">模型名</Label>
+        <Label htmlFor="p-model" className={LABEL_CLS}>模型名</Label>
         <ImeInput id="p-model" value={d.model} onChange={(e) => d.setModel(e.target.value)}
           className="font-mono text-xs" placeholder="如 deepseek-chat" />
       </div>
       <div>
-        <Label htmlFor="p-key" className="mb-1.5 block text-xs text-muted-foreground">API Key</Label>
+        <Label htmlFor="p-key" className={LABEL_CLS}>API Key</Label>
         <ImeInput id="p-key" type="password" autoComplete="off" value={d.key}
           onChange={(e) => d.setKey(e.target.value)} className="font-mono text-xs"
           placeholder={provider.hasKey ? `已保存 ${provider.keyHint || ''}（留空 = 保持不变）` : '粘贴密钥'} />
@@ -227,13 +229,13 @@ function AdvancedFields({ d }) {
   return (
     <div className="grid grid-cols-2 gap-3 pt-1">
       <div>
-        <Label htmlFor="p-ctx" className="mb-1.5 block text-xs text-muted-foreground">上下文上限（token）</Label>
+        <Label htmlFor="p-ctx" className={LABEL_CLS}>上下文上限（token）</Label>
         <NumberInput id="p-ctx" className="w-full" value={d.ctxLimit} min={512} step={512}
           onCommit={(v) => d.setCtxLimit(v === '' ? '' : String(v))} placeholder="如 1000000（1M）" />
         <FieldDesc>只影响用量环与自动压缩阈值，不发给模型。</FieldDesc>
       </div>
       <div>
-        <Label htmlFor="p-extra" className="mb-1.5 block text-xs text-muted-foreground">额外请求体（JSON）</Label>
+        <Label htmlFor="p-extra" className={LABEL_CLS}>额外请求体（JSON）</Label>
         <JsonTextarea id="p-extra" rows={3} value={d.extra} onCommit={d.setExtra}
           placeholder='{"options":{"num_ctx":32768}}' />
         <p className="mt-1 text-[11px] leading-snug text-subtle">
@@ -241,7 +243,7 @@ function AdvancedFields({ d }) {
         </p>
       </div>
       <div>
-        <Label htmlFor="p-headers" className="mb-1.5 block text-xs text-muted-foreground">额外请求头（JSON）</Label>
+        <Label htmlFor="p-headers" className={LABEL_CLS}>额外请求头（JSON）</Label>
         <JsonTextarea id="p-headers" rows={2} value={d.headers} onCommit={d.setHeaders}
           placeholder='{"X-Api-Version":"2024-01"}' />
         <p className="mt-1 text-[11px] leading-snug text-subtle">
@@ -252,7 +254,7 @@ function AdvancedFields({ d }) {
         </p>
       </div>
       <div>
-        <Label htmlFor="p-sess" className="mb-1.5 block text-xs text-muted-foreground">会话标识头（可选）</Label>
+        <Label htmlFor="p-sess" className={LABEL_CLS}>会话标识头（可选）</Label>
         <ImeInput id="p-sess" value={d.sessionHeader} onChange={(e) => d.setSessionHeader(e.target.value)}
           className="font-mono text-xs" placeholder="留空 = 自动（opencode 自动带 x-opencode-session）" />
         <p className="mt-1 text-[11px] leading-snug text-subtle">
@@ -284,8 +286,9 @@ function ProviderForm({ provider, isActive, onClose }) {
   const proto = getProtocol(d.type);
 
   const save = () => {
-    if (d.extra.trim() && parseExtraBody(d.extra) === null) { toast('额外请求体不是合法的 JSON 对象', 'err'); return; }
-    if (d.headers.trim() && parseExtraBody(d.headers) === null) { toast('额外请求头不是合法的 JSON 对象', 'err'); return; }
+    /* 保存前的 JSON 预检：文案与 parts.jsx 的 JsonTextarea 失焦校验同一句（同一类错误一句话） */
+    if (d.extra.trim() && parseExtraBody(d.extra) === null) { toast('「额外请求体」JSON 格式不合法，没有保存', 'err'); return; }
+    if (d.headers.trim() && parseExtraBody(d.headers) === null) { toast('「请求头」JSON 格式不合法，没有保存', 'err'); return; }
     const fields = {
       name: d.name.trim() || '未命名',
       type: d.type,
@@ -336,7 +339,7 @@ function ProviderForm({ provider, isActive, onClose }) {
         <NameTypeFields d={d} />
         <FieldDesc>{proto.hint}</FieldDesc>
         <div>
-          <Label htmlFor="p-base" className="mb-1.5 block text-xs text-muted-foreground">Base URL</Label>
+          <Label htmlFor="p-base" className={LABEL_CLS}>Base URL</Label>
           <ImeInput id="p-base" value={d.baseUrl} onChange={(e) => d.setBaseUrl(e.target.value)}
             placeholder={proto.defaults.baseUrl} className="font-mono text-xs" />
         </div>

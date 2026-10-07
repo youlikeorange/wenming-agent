@@ -55,11 +55,18 @@ export function promptBlocks(env) {
   const { Prompts, Memory, AgentDefs } = env;
   const val2 = (k) => val2Of(env, k);
   let blocks = Prompts.systemBlocks();
-  // 插件说明只在对应插件开着**且插件工具真的可用**时注入（关掉/未登录/未绑定 = 连工具都不注册）
+  // 工具说明跟着**各自的开关**走（关掉 = 连工具带说明都不出现——参数面板是这么承诺的：
+  // tool_mem_on「关掉后模型既看不到记忆」、skill_tools_on「关掉后不注册技能工具」）。
+  // 原先只闸了三个 plugin.*.usage，memory/skill/spawn_agent 的说明在工具被关掉后照样注入，
+  // 模型会被告知"你有这些工具"，实际调用却失败（2026-10-06 审计）。
   const allow = AgentDefs.pluginsAllowed();
+  const SKILL_DESC_IDS = new Set(['tool.skill_write.desc', 'tool.skill_import.desc', 'tool.skill_delete.desc', 'tool.use_skill.desc', 'tool.list_skills.desc']);
   blocks = blocks.filter((b) => (b.id === 'plugin.fs.usage' ? (allow && !!val2('plugin_fs_on'))
     : b.id === 'plugin.exec.usage' ? (allow && !!val2('plugin_exec_on'))
-    : b.id === 'plugin.screen.usage' ? (allow && !!val2('plugin_screen_on')) : true));
+    : b.id === 'plugin.screen.usage' ? (allow && !!val2('plugin_screen_on'))
+    : b.id === 'tool.memory_write.desc' ? !!val2('tool_mem_on')
+    : SKILL_DESC_IDS.has(b.id) ? !!val2('skill_tools_on')
+    : b.id === 'tool.spawn_agent.desc' ? !!val2('subagent_on') : true));
   const skillIndex = Prompts.skillIndexBlock();
   if (skillIndex) blocks.push(skillIndex);
   const gate = AgentDefs.pluginGateNote();
@@ -117,13 +124,17 @@ export function sendPreview(env) {
   return { blocks, tools, messages: msgs, defs };
 }
 
-/** 本轮请求参数（**两端唯一的实现**）：参数表 → 协议字段；有工具就带上；extraBody 透传；模型名兜底。
- *  服务端托管运行（lib/agent/run.js 的 buildOpts）与浏览器宿主（ui/state/host.js 的 buildOptions）
- *  原先各写一份、只靠注释同步口径 —— 收敛到这里（压缩摘要也读它：context.js 会在副本上删掉 tools）。 */
-export function buildRequestOptions({ params, defs, model, extraBody } = {}) {
+/** 本轮请求参数（**两端唯一的实现**）：参数表 → 协议字段；有工具就带上；模型名兜底。
+ *  服务端托管运行（lib/agent/run-loop.js 的 buildOpts）与浏览器宿主（ui/state/host.js 的 buildOptions）
+ *  原先各写一份、只靠注释同步口径 —— 收敛到这里（压缩摘要也读它：context.js 会在副本上删掉 tools）。
+ *
+ *  extraBody **不在这里透传**（2026-10-06 审计删除了无人消费的 opts.__extraBody）：
+ *  它的生效通道是服务端——存储的服务商配置由 run-upstream.js 的 applyExtraBody 从
+ *  target.extraBody 合并；临时配置（"测试连接"）走 ref.extraBody（transport.js 的 refOf 带上）。
+ *  参数仍接受 extraBody 但忽略之：调用方三处（两端宿主 + 子执行器）不必为此各改签名。 */
+export function buildRequestOptions({ params, defs, model } = {}) {
   const opts = toRequestParams(params || {});
   if (defs && defs.length) opts.tools = defs;
-  if (extraBody) opts.__extraBody = extraBody;      // 由适配器/传输层消费
   if (!opts.model && model) opts.model = model;
   return opts;
 }

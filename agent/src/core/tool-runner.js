@@ -178,15 +178,8 @@ export function createToolRunner() {
     const clean = stripBadArgs(args);
     let d = {};
     try {
-      /* sessionId：服务端按它定位"这份任务清单属于哪条对话"（todo_write 要用；
-         其余工具忽略它）。托管运行那条路不用它——会话 id 在服务端上下文里。 */
-      const sessId = (() => { try { const s = C.curSess && C.curSess(); return s && s.id; } catch { return ''; } })();
-      d = await post(EP.toolsCall, { name, args: clean, limits: pluginLimits(), grant: grant || undefined, sessionId: sessId || undefined },
-        /* 超时要**比服务端硬超时（AGENT_EXEC_MAX_SEC，默认 600s）更长**：客户端先断的话命令
-           还在服务端跑着，模型却拿到"请求失败"、输出也丢了（旧值 300s 对不上，2026-09-19 审计修正）。
-           再并上本轮的 run signal：用户点「停止」要能立刻掐断在途的工具调用，否则界面要一直
-           等到 660s 才退出"生成中"。 */
-        { signal: mergedSignal(660000) });
+      d = await post(EP.toolsCall, { name, args: clean, limits: pluginLimits(), grant: grant || undefined },
+        { signal: mergedSignal(EXEC_CLIENT_TIMEOUT_MS) });
     } catch (e) {
       // 传输层没拿到响应（断网 / 超时 / 被停止）：与旧实现同一句话
       if (!(e instanceof ApiError) || e.network || e.aborted) {
@@ -222,10 +215,8 @@ export function createToolRunner() {
 
   /** 任务清单（todo_write）：走服务端存（按账号与会话），**不占文件/命令预算**——
    *  它是"记录进度"不是文件操作；就算模型一轮里多调几次，兜底还有 maxRounds（轮次上限），
-   *  不存在"把预算烧光"的风险。没登录就用不了（服务端要按账号落盘）。 */
+   *  不存在"把预算烧光"的风险。登录/接入检查与插件同走 callAgentTool 的一道（原先两道重复）。 */
   async function runTodoTool(args) {
-    if (!C.AGENT_API) return { ok: false, note: '未接入', text: '当前没有接入站点后端：任务清单要用服务端存储。' };
-    if (!C.me()) return { ok: false, note: '需要登录', text: C.Prompts.text('plugin.need_login') };
     return await callAgentTool('todo_write', args);
   }
 
@@ -237,6 +228,7 @@ export function createToolRunner() {
       return { ok: false, note: '需要绑定本机账号',
         text: '读技能文件要以绑定账号的权限进行：请在设置抽屉 → 本机账号里绑定后再试。' };
     }
+    /* note 的措辞与上面 PLUGIN_ERROR_RULES 的同名类一一对应（同文件一份翻译口径） */
     if (body.needPermission || body.needRoots) {
       return { ok: false, note: body.needRoots ? '路径不可访问' : '权限不足',
         text: String(body.error || (e && e.message) || '服务端拒绝了这次安装。') };
@@ -252,6 +244,11 @@ export function createToolRunner() {
     if (!run || !AbortSignal.any) return t;
     return AbortSignal.any([t, run]);
   }
+
+  /** 插件调用的**客户端**总超时 = 服务端硬上限（lib/agent/limits.js 的 timeoutSec，默认 600s，
+     AGENT_EXEC_MAX_SEC 可抬高）× 1.1 取整：客户端必须比服务端后断，否则命令还在服务端跑着、
+     模型却拿到"请求失败"（2026-09-19 审计；limits.js 里有指向本行的互指注释）。 */
+  const EXEC_CLIENT_TIMEOUT_MS = 660000;
 
   /* ======================= 联网搜索 ======================= */
 
@@ -300,7 +297,10 @@ export function createToolRunner() {
     const bt = takeBudget(budget, 'search', 'maxSearch', 'loop.budget_search');
     if (bt) return bt;
     const q = String(args.query || args.q || '').trim() || userText;
-    return { ok: true, text: await doSearch(q, 5) };
+    /* 面板的 tool_search_max 是"一轮能搜几次"（次数预算）；这里的是"一次搜回几条"
+       （结果条数）——两个口径管两件事。5 条对摘要注入刚好，要更多走 args.max_results。 */
+    const n = Math.max(1, Math.min(10, Number(args.max_results) || 5));
+    return { ok: true, text: await doSearch(q, n) };
   }
 
   /* ---------- 记忆：会话 + 项目 + 全局 ---------- */
@@ -352,15 +352,14 @@ export function createToolRunner() {
         ? hits.map(h => `[${C.Memory.scopeCn(h.scope)}·${h.id}] ${h.title}${h.tags.length ? '（' + h.tags.join('/') + '）' : ''}：${h.excerpt}`).join('\n')
         : `没有与「${args.query}」相关的记忆。` };
     }
+    // memory_read 与 memory_forget 共用"找不到就回这句话"（原先两份逐字相同）
+    const e = C.Memory.find(args.id, null);
+    if (!e) return { ok: false, note: '未找到', text: `没有这条记忆：${args.id}` };
     if (name === 'memory_read') {
-      const e = C.Memory.find(args.id, null);
-      if (!e) return { ok: false, note: '未找到', text: `没有这条记忆：${args.id}` };
       const scope = C.Memory.scopeCn(C.Memory.project.includes(e) ? 'project' : C.Memory.listOf('global').includes(e) ? 'global' : 'session');
       return { ok: true, note: '已读取', text: `【${scope}记忆 · ${e.title}】\n${e.content}` };
     }
-    // memory_forget：改动类，删记忆要扣，但"没找到"这种空手不扣
-    const e = C.Memory.find(args.id, null);
-    if (!e) return { ok: false, note: '未找到', text: `没有这条记忆：${args.id}` };
+    // memory_forget：改动类，删记忆要扣，但"没找到"这种空手不扣（上面已挡）
     const bt = takeBudget(budget, 'aux', 'maxAux', 'loop.budget_aux');
     if (bt) return bt;
     C.Memory.remove(e.id, null);
@@ -370,8 +369,26 @@ export function createToolRunner() {
 
   /* ---------- 技能（Pi 的渐进披露 + 自造 + 从 Markdown 安装） ---------- */
 
+  /** 技能类写操作的**共同闸门**（write / delete / import 三处同构，2026-10-06 审计收敛）：
+   *  skillAsk（访问级别的"技能改动"开关）决定要不要问 → 弹确认框 → 拒绝回统一的话 →
+   *  勾了「以后不再问」落 C.onSkillRemember → **确认通过后**才扣 aux 预算（拒绝不烧额度）。
+   *  @returns null = 闸门通过且已扣预算；否则返回要回给模型的失败结果 */
+  async function confirmSkillGate(action, target, args, budget, deniedName) {
+    if (skillAsk()) {
+      const r = await C.confirmSkillChange(action, target, args);
+      if (!r.ok) {
+        return { ok: false, note: '用户未同意', text: C.Prompts.text('loop.skill_write.denied').replace(/\{name\}/g, deniedName) };
+      }
+      // 勾了「以后这类技能改动不用再问我」→ 关掉 skill_write_confirm（与 accessOf 的 skillAsk 同一开关）
+      if (r.remember) C.onSkillRemember();
+    }
+    const bt = takeBudget(budget, 'aux', 'maxAux', 'loop.budget_aux');   // 同插件：同意后才扣
+    if (bt) return bt;
+    return null;
+  }
+
+  /** 清单只给名字与用途，正文按需加载并记为"已加载"。读类不占预算。 */
   async function runSkillTool(name, args, budget) {
-    /* 清单只给名字与用途，正文按需加载并记为"已加载"。读类不占预算。 */
     if (name === 'list_skills') {
       const list = C.Prompts.skills().filter(s => s.enabled !== false);
       const loaded = C.Prompts.loadedList();
@@ -396,14 +413,8 @@ export function createToolRunner() {
       /* skillAsk（访问级别的"技能改动"开关）决定要不要问：
          full 档 = 免确认，其余档 = 弹确认框。原先这里无条件弹窗，
          于是「访问级别 → 完全」下仍然每次打断，skillAsk 成了只存在于文案里的字段（审计 C6）。 */
-      if (skillAsk()) {
-        const r = await C.confirmSkillChange(existing ? '改写' : '新建', skillName, args);
-        if (!r.ok) return { ok: false, note: '用户未同意', text: C.Prompts.text('loop.skill_write.denied').replace(/\{name\}/g, skillName) };
-        // 勾了「以后这类技能改动不用再问我」→ 关掉 skill_write_confirm（与 accessOf 的 skillAsk 同一开关）
-        if (r.remember) C.onSkillRemember();
-      }
-      const bt = takeBudget(budget, 'aux', 'maxAux', 'loop.budget_aux');   // 同插件：同意后才扣
-      if (bt) return bt;
+      const gate = await confirmSkillGate(existing ? '改写' : '新建', skillName, args, budget, skillName);
+      if (gate) return gate;
       const item = existing
         ? C.Prompts.updateSkill(existing.id, { description: args.description, text: args.content, auto: args.auto !== false })
         : C.Prompts.addSkill({ name: skillName, description: args.description, text: args.content, auto: args.auto !== false });
@@ -423,13 +434,8 @@ export function createToolRunner() {
     if (!s) return { ok: false, note: '未找到', text: `没有名为「${skillName}」的技能。` };
     /* 与 skill_write 同走 skillAsk（审计 C6 当时只接了 write，删除/导入这两条仍是死开关：
        完全访问档照样被打断，确认框上「以后不用再问我」勾了也没有消费点）。 */
-    if (skillAsk()) {
-      const r = await C.confirmSkillChange('删除', skillName, null);
-      if (!r.ok) return { ok: false, note: '用户未同意', text: C.Prompts.text('loop.skill_write.denied').replace(/\{name\}/g, skillName) };
-      if (r.remember) C.onSkillRemember();
-    }
-    const bt = takeBudget(budget, 'aux', 'maxAux', 'loop.budget_aux');
-    if (bt) return bt;
+    const gate = await confirmSkillGate('删除', skillName, null, budget, skillName);
+    if (gate) return gate;
     C.Prompts.removeSkill(s.id); C.renderPromptPanel(); C.updateCtxMeter();
     return { ok: true, note: '已删除', text: `技能「${skillName}」已删除。` };
   }
@@ -452,16 +458,9 @@ export function createToolRunner() {
           + (plan && plan.errors && plan.errors.length ? '\n' + plan.errors.join('\n') : '') };
     }
     /* 同 skill_write/skill_delete：走 skillAsk。full 档免确认（勾过的也免），其余档弹框。 */
-    if (skillAsk()) {
-      const r = await C.confirmSkillChange('导入', '', { path: plan.path, items });
-      if (!r.ok) {
-        return { ok: false, note: '用户未同意',
-          text: C.Prompts.text('loop.skill_write.denied').replace(/\{name\}/g, items.map((x) => x.name).join('、')) };
-      }
-      if (r.remember) C.onSkillRemember();     // 同上：勾了就不再问这类改动
-    }
-    const bt = takeBudget(budget, 'aux', 'maxAux', 'loop.budget_aux');
-    if (bt) return bt;
+    const gate = await confirmSkillGate('导入', '', { path: plan.path, items }, budget,
+      items.map((x) => x.name).join('、'));
+    if (gate) return gate;
     let done;
     try {
       done = await post(EP.skillsImport, { path: target, auto: args.auto }, { timeoutMs: 30000 });

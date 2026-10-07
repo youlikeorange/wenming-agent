@@ -139,6 +139,7 @@ function DiffRows({ diff }) {
 
 /** 差异主体：加载中 / 读不到 / 不可比（说明块）/ 有差异（概览 + 逐行）。
  *  导出是为了单测：Sheet 走 radix Portal，SSR 下不渲染内容，测差异渲染只能直接渲染这一层。 */
+/* 导出是有意的：undo-ui.test.mjs 直接渲染它（上面那条审计注记有误，2026-10-06 复核后保留导出）。 */
 export function DiffBody({ data, loading, error }) {
   const diff = useMemo(() => computeDiff(data), [data]);
   if (loading) {

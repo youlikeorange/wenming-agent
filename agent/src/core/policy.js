@@ -173,15 +173,5 @@ function matchRule(cmd, rules) {
 }
 
 /** 加一条规则（去重、归一化、上限 100 条） */
-function addRule(rules, rule) {
-  const out = (Array.isArray(rules) ? rules : []).map(normalizeRule).filter(Boolean);
-  const r = normalizeRule(rule);
-  if (r && !out.includes(r)) out.push(r);
-  return out.slice(-100);
-}
-const removeRule = (rules, rule) => {
-  const r = normalizeRule(rule);
-  return (Array.isArray(rules) ? rules : []).filter(x => normalizeRule(x) !== r);
-};
 
-export const AgentPolicy = { MODES, meta, modeOf, eff, summary, ruleFor, matchRule, addRule, removeRule, normalizeRule };
+export const AgentPolicy = { MODES, meta, modeOf, eff, summary, ruleFor, matchRule, normalizeRule };

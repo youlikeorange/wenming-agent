@@ -305,9 +305,7 @@ export function createMemory() {
   return {
     init, load, onChange, write, update, remove, clearSession, search, find, scopeCn,
     setProject, indexBlock, fullBlock, projectBlock, sessionBlock, serialize, listOf,
-    get global() { return globalList; },
     get project() { return projectList; },
-    get session() { return sessionList; },
     get projectMeta() { return projectMeta; },
     /* 项目记忆的"来源"三件套（订阅方据此决定能不能整份写回、写回时带什么基准）：
        条目是不是这个项目的、是不是从服务端取回来的、取回时是几条。 */

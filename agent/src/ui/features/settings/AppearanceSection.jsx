@@ -9,9 +9,10 @@ const MODES = [['dark', '深色'], ['light', '浅色'], ['system', '跟随系统
 const SCALES = [['0.9', '小'], ['1', '标准'], ['1.1', '大'], ['1.2', '更大']];
 const DENSITIES = [['compact', '紧凑'], ['cozy', '适中'], ['comfortable', '宽松']];
 
-/* 与服务端白名单（lib/agent/sanitize.js 的 theme.accent）逐一对应，颜色取自 styles.css 的令牌 */
+/* 与服务端白名单（lib/agent/sanitize.js 的 theme.accent）逐一对应，颜色取自 styles.css 的令牌
+   （blue 无专门规则：取深色默认 #6366f1，浅色出厂是 #4f46e5，同属靛蓝系） */
 const ACCENTS = [
-  { id: 'blue', label: '蓝', color: '#2f6bff' },
+  { id: 'blue', label: '蓝', color: '#6366f1' },
   { id: 'violet', label: '紫', color: '#7c5cff' },
   { id: 'emerald', label: '绿', color: '#10b981' },
   { id: 'amber', label: '琥珀', color: '#f59e0b' },
@@ -52,7 +53,7 @@ export default function AppearanceSection() {
       <SettingRow label="主题模式" tip="「跟随系统」跟随操作系统的浅色/深色偏好，系统切换时立即跟随。">
         <ChoiceGroup options={MODES} value={mode} onChange={(v) => setTheme({ mode: v })} />
       </SettingRow>
-      <SettingRow label="强调色" desc="按钮、链接、选中态与用量环的主色" tip="只换强调色，其余中性色不动；亮色主题下会自动取更深的同色。">
+      <SettingRow label="强调色" desc="按钮、链接、选中态与用量环的主色" tip="只换主色与配套的 ring，其余中性色不动；选中态的文字（侧栏、设置分区）在深浅两套主题下都会跟着强调色。">
         <div className="flex items-center gap-2.5">
           {ACCENTS.map((a) => (
             <AccentDot key={a.id} item={a} active={a.id === accent} onPick={(id) => setTheme({ accent: id })} />

@@ -14,7 +14,7 @@ import { FieldDesc, SectionTitle } from '../../components/ui/field.jsx';
 import { ImeInput } from '../../components/ui/ime-field.jsx';
 import { toast } from '../../components/ui/toast.jsx';
 import DirectoryPicker from '../DirectoryPicker.jsx';
-import { EmptyHint, NoteBox } from './parts.jsx';
+import { EmptyHint, ListRow, NoteBox } from './parts.jsx';
 import { askConfirm } from '../../state/host.js';
 
 
@@ -62,10 +62,10 @@ function StartRow({ start }) {
     <section>
       <SectionTitle>起点（项目都放这儿）</SectionTitle>
       <div className="space-y-2 px-4">
-        <div className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5">
+        <ListRow>
           <Home className="size-3.5 shrink-0 text-subtle" />
           <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground" title={start}>{start || '(未设置)'}</span>
-        </div>
+        </ListRow>
         <div className="flex items-center gap-2">
           <ImeInput value={draft} onChange={(e) => setDraft(e.target.value)} className="h-8 font-mono text-xs"
             placeholder="换成别的目录，如 /media/leo/DATA/workspace"

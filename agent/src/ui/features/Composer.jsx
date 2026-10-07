@@ -141,7 +141,7 @@ export default function Composer() {
     }
     if (!text) { toast('先输入内容再发送'); return; }
     send();                                      // 不带参数：send 读 state.draft 并清空；失败时草稿保留
-    requestScrollBottom();                       // 双保险（send 内部也会调 hooks.scrollBottom）
+    requestScrollBottom();                       // 双保险（发送与插话都让用户看见自己那条）
   };
 
   const onInput = (e) => {

@@ -75,6 +75,20 @@ export function EmptyHint({ children, className }) {
   );
 }
 
+/** 分组卡容器：设置分区里"一块带边框的条目组"（原先七个分区各写一遍同一串类，2026-10-06 收敛） */
+export function GroupCard({ children, className }) {
+  return <div className={cn('overflow-hidden rounded-lg border border-border', className)}>{children}</div>;
+}
+
+/** 列表行：项目/技能/自定义条目这类"一行一条"的可点条目（原先三处各写一遍） */
+export function ListRow({ children, className, ...rest }) {
+  return (
+    <div className={cn('flex items-center gap-2 rounded-md border border-border px-3 py-1.5', className)} {...rest}>
+      {children}
+    </div>
+  );
+}
+
 /** 分段选择（外观的模式/字号/密度、技能的加载方式） */
 export function ChoiceGroup({ options, value, onChange, className }) {
   return (
@@ -99,7 +113,7 @@ export function ChoiceGroup({ options, value, onChange, className }) {
 
 /** 二次确认：不可逆操作（删除 / 解绑 / 清空）一律先过这一关 */
 /* 注：这里原有 ConfirmDialog（局部受控弹窗）。审计发现全站有 3 套确认机制（全局 askConfirm、
-   这个局部弹窗、以及各组件自己 useStiate 的第三种），同一个"归档项目"在侧栏与设置页外观都不同。
+   这个局部弹窗、以及各组件自己 useState 的第三种），同一个"归档项目"在侧栏与设置页外观都不同。
    现在统一走 askConfirm（ui/state/host.js + features/ConfirmDialog.jsx，队列化、带"总是允许"语义），
    组件侧一句 `const r = await askConfirm({title, body, okText, danger}); if (r.ok) …` 即可。 */
 
@@ -118,7 +132,11 @@ export function NumberInput({ value, onCommit, min, max, step = 1, unit, classNa
     const s = draft.trim();
     if (!s) { onCommit(''); return; }
     const n = Number(s);
-    if (!Number.isFinite(n)) { toast('请输入数字', 'err'); return; }
+    if (!Number.isFinite(n)) {
+      const range = min !== undefined ? `（${min} ~ ${max === undefined ? '无上限' : max}）` : '';
+      toast(`需要填数字${range}`, 'err');
+      return;
+    }
     const lo = min === undefined ? -Infinity : min;
     const hi = max === undefined ? Infinity : max;
     onCommit(Math.max(lo, Math.min(hi, n)));
@@ -283,7 +301,7 @@ function ChipsEditor({ items = [], onChange, placeholder = '输入后回车添�
     const v = draft.trim();
     if (!v) return;
     setDraft('');
-    if (items.includes(v)) { toast('已经在清单里了'); return; }
+    if (items.includes(v)) { toast(`「${v}」已经在清单里了`); return; }
     onChange([...items, v].slice(-100));
   };
   return (

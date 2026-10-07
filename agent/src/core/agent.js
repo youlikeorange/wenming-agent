@@ -22,12 +22,17 @@
  *  （旧实现留着一个只写不读的 Providers 注入点，审计时删掉）。
  */
 
+import { TOOL_DEFAULTS, FILES_CAP } from './params.js';
+import { defaultLoopText } from './prompts.js';
+import { thinkLoopHit, thinkOnlyRunaway, THINK_CHECK_STEP } from './thinkloop.js';
+
 /** 结果对象：把工具输出归一成 { ok, text, note, files? }
  *  files = **可下载文件清单**（deliver_file 这类"把文件交给用户"的工具才有）：
  *  白名单式保留（只认 name/size/exec/packaged/source/note），内核不认识它的语义，
- *  只负责让它一路传到追踪条上——界面据此画那张文件卡片（见 ui/features/TraceStrip.jsx）。 */
+ *  只负责让它一路传到追踪条上——界面据此画那张文件卡片（见 ui/features/TraceStrip.jsx）。
+ *  条数上限 FILES_CAP 的真源在 params.js（服务端响应层不再各截一次）。 */
 const FILE_KEYS = ['name', 'size', 'exec', 'packaged', 'source', 'note'];
-const asFiles = (list) => (Array.isArray(list) ? list.slice(0, 20).map((f) => {
+const asFiles = (list) => (Array.isArray(list) ? list.slice(0, FILES_CAP).map((f) => {
   const out = {};
   for (const k of FILE_KEYS) if (f && f[k] !== undefined) out[k] = f[k];
   return out;
@@ -101,7 +106,7 @@ const fingerprint = (name, args) => {
  *  写大文件时页面卡死的主因之一（实测）。路径这类短字段照原样留着，界面标题仍然对。
  *  只截**值**、不动键，复制出来的参数至少还能看出结构。
  *  上限可在面板「权限与工具 → 结果与记录」调（`record_args_chars`），默认 2000。 */
-const ARG_STR_MAX = 2000;
+const ARG_STR_MAX = TOOL_DEFAULTS.record_args_chars;     // 出厂默认唯一真源：params.js 的 TOOL_FIELDS
 function shrinkArgs(args, max) {
   if (!args || typeof args !== 'object') return args;
   const cap = Number.isFinite(Number(max)) && Number(max) > 0 ? Math.floor(Number(max)) : ARG_STR_MAX;
@@ -114,13 +119,18 @@ function shrinkArgs(args, max) {
   return out;
 }
 
-/** 追踪条里单条工具结果的字数上限：默认 4000，面板 `record_trace_chars` 可调。
+/** 追踪条里单条工具结果的字数上限（面板 `record_trace_chars` 可调，出厂默认唯一真源在 params.js）。
  *  它只管"记录/显示"——发给模型的工具结果原文不受它限制（见下面的 context.concat）。 */
-const TRACE_CHARS = 4000;
+const TRACE_CHARS = TOOL_DEFAULTS.record_trace_chars;
 const traceCap = (cfg) => {
   const n = Number(cfg && cfg.traceChars);
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : TRACE_CHARS;
 };
+
+/** 循环内文案：宿主注入的 texts 优先，缺了取登记表 DEFAULTS 的出厂正文
+ *  （键↔id 映射与默认正文的唯一真源都在 prompts.js 的 LOOP_TEXT_IDS / defaultLoopText——
+ *  旧实现这里手抄一份兜底，与登记表双写后三条已经分叉，2026-10-06 审计收敛）。 */
+const loopText = (cfg, key) => (cfg.texts && cfg.texts[key]) || defaultLoopText(key);
 
 /* 哪些工具重复调用是**正常**的（不该拦）：
    读类在"写完再读回来核对"时参数就是一模一样的；写类改完同一个文件再写全文、
@@ -203,8 +213,7 @@ const shortErr = (e) => String((e && e.message) || e || '未知错误').replace(
 
 /** 重试提示的文案（模板在提示词登记表 loop.retry，可改） */
 function retryText(cfg, e, attempt, maxRetry, waitMs) {
-  const t = (cfg.texts && cfg.texts.retry) || '上游出错（{err}），{sec} 秒后自动重试（{n}/{max}）…';
-  return t.replace(/\{err\}/g, shortErr(e))
+  return loopText(cfg, 'retry').replace(/\{err\}/g, shortErr(e))
     .replace(/\{sec\}/g, String(Math.round(waitMs / 1000)))
     .replace(/\{n\}/g, String(attempt)).replace(/\{max\}/g, String(maxRetry));
 }
@@ -214,6 +223,52 @@ const stoppedRound = (tries) => ({
   content: '', thinking: '', stats: null, stop: '', sig: '', redacted: '',
   calls: [], recovered: false, stopped: true, clean: true, cut: false, tries,
 });
+
+/* ============================ 调用保护（超时 / 思考循环）与 usage 累计 ============================ */
+
+/** 超时/循环中断后的"立即重调"上限（不吃上游出错重试的预算；最后一次机会放开循环检测，
+ *  让它跑到底——防止"检测→重调→再检测"自己变成一个环，真卡死由最高时长兜底）。 */
+const CALL_RETRY_MAX = 2;
+
+/** usage 累加（一次提问会经历多次模型调用，每次调用都注入一遍上下文：
+ *  输入按"注入合计"、输出按"生成合计"累计——2026-10-07 用户定的口径）。 */
+const addUsage = (a, b) => {
+  const n = (x, k) => Number(x && x[k]) || 0;
+  const out = {};
+  for (const k of ['prompt_eval_count', 'eval_count']) {
+    const v = n(a, k) + n(b, k);
+    if (v > 0) out[k] = v;
+  }
+  const d = n(a, 'eval_duration') + n(b, 'eval_duration');
+  if (d > 0) out.eval_duration = d;
+  return out;
+};
+
+/** 实时事件里的合并 stats：上游这次的原始值 + 本轮到此为止的累计（界面两档显示都用累计口径） */
+const withLiveTotals = (raw, acc) => Object.assign({}, raw, addUsage(acc && acc.totals, acc && acc.round));
+
+/** 收尾/落盘用的累计 stats（不掺单轮字段；tok/s = 累计输出 / 累计生成时长） */
+const totalsStats = (t) => {
+  if (!t) return null;
+  const out = {};
+  if (Number(t.prompt_eval_count) > 0) out.prompt_eval_count = t.prompt_eval_count;
+  if (Number(t.eval_count) > 0) out.eval_count = t.eval_count;
+  if (Number(t.gen_ms) > 0) out.gen_ms = t.gen_ms;
+  if (Number(t.eval_duration) > 0) out.eval_duration = t.eval_duration;
+  return out;
+};
+
+/** usage 入账（2026-10-07）：一次调用成功返回后，把它贡献的量并入累计，返回累计后的
+ *  stats（tok/s = 累计输出 / 累计生成时长，见 run() 的调用点）；这一轮没有 usage 返回 null。 */
+function bankUsage(acc, round) {
+  if (!acc.round) return null;
+  acc.totals = addUsage(acc.totals, acc.round);
+  acc.round = null;
+  const t = totalsStats(acc.totals) || {};
+  const gm = Number(round.stats && round.stats.gen_ms) || 0;
+  if (gm > 0) t.gen_ms = (Number(t.gen_ms) || 0) + gm;
+  return t;
+}
 
 /** 等一会儿，可被「停止」打断；返回 false = 期间被中止（调用方按"已停止"收尾） */
 function sleepAbortable(ms, signal) {
@@ -226,74 +281,180 @@ function sleepAbortable(ms, signal) {
   });
 }
 
+/** 流事件的逐条处理（表格驱动，与客户端 run.js 的 HANDLERS 同款——for-await 里只剩查表，
+ *  事件再多种类复杂度也不涨）。ctx 携带 out / 钩子 / usage 累计器 / 调用保护的现场。 */
+function streamHandlers(ctx) {
+  const { out, H, tick } = ctx;
+  return {
+    content: (ev) => { tick(); out.content += ev.text; call(H.onDelta, { type: 'content', text: ev.text }); },
+    thinking: (ev) => {
+      tick(); out.thinking += ev.text;
+      call(H.onDelta, { type: 'thinking', text: ev.text });
+      /* 思考循环检测（thinkloop.js）：每积累 THINK_CHECK_STEP 字查一次；
+         loopWatch 关掉（最后一次重调的放行轮）或已命中过就不查。 */
+      if (!ctx.loopWatch || ctx.loopMsg) return;
+      ctx.since += ev.text.length;
+      if (ctx.since < THINK_CHECK_STEP) return;
+      ctx.since = 0;
+      const hit = thinkLoopHit(out.thinking)
+        || (thinkOnlyRunaway(out.thinking, out.content, out.calls) ? '整轮只有思考且已超过判定长度' : '');
+      if (hit) ctx.halt(hit);
+    },
+    thinking_sig: (ev) => { out.sig += ev.text; },
+    thinking_redacted: (ev) => { out.redacted += ev.text; },
+    tool_calls: (ev) => { out.calls.push(...ev.calls); if (ev.recovered) out.recovered = true; },
+    stats: (ev) => {
+      out.stats = ev.raw;
+      /* 累计口径（2026-10-07）：实时事件带"本轮所有调用到此为止"的合计；
+         没有累计器（裸调路径）维持旧行为——原样转发本次调用的 raw。 */
+      if (!ctx.acc) return call(H.onStats, ev.raw);
+      ctx.acc.round = addUsage(ctx.acc.round, ev.raw);
+      call(H.onStats, withLiveTotals(ev.raw, ctx.acc));
+    },
+    stop: (ev) => { out.stop = ev.reason || ''; },
+    /* 流的**结束形态**（协议适配器在流尾给一条）：clean=false 表示没拿到 finish_reason / [DONE]
+       就断了——这一轮的文本是被掐断的半截，不能当"回答完了"。 */
+    stream_end: (ev) => { out.clean = ev.clean !== false; },
+    error: (ev) => {
+      /* 错误事件带不带 status 都要把状态码留住：重试策略据此判断"重试有没有意义" */
+      call(H.onNotice, { kind: 'error', text: ev.message });
+      const err = new Error(ev.message);
+      if (ev.status) err.status = ev.status;
+      throw err;
+    },
+  };
+}
+
 /** 读一轮的流式输出：正文/思考/统计/工具调用，边读边把增量交给宿主（onDelta）。
  *
  *  **中断不是失败**：用户点「停止」时宿主 abort，上游连接随之被掐断，读流处会抛
  *  AbortError（服务端是 run-upstream 的 AbortError，浏览器是 ApiError(aborted)）。
  *  这里把它收成 `stopped=true` 交回调用方——已生成的内容一个字不丢，宿主按"已停止生成"
- *  收尾；其它错误一律抛出（真故障不许被伪装成"用户停止"，那样错误就再也看不见了）。 */
-async function readRound(cfg, messages, H) {
+ *  收尾；其它错误一律抛出（真故障不许被伪装成"用户停止"，那样错误就再也看不见了）。
+ *
+ *  **调用保护**（2026-10-07，防"模型卡死/无限思考"把整轮吊住）：
+ *    · 单次调用最高时长：cfg.callTimeoutSec（秒，0=不限）。到点中断本次调用，错误带
+ *      softRetry 标记 → readRoundRetry **立即重调**（不睡 30 秒，不吃上游重试预算）；
+ *    · 思考循环检测（thinkloop.js）：思考流尾部一字不差地反复输出 → 同样中断重调；
+ *    · 两类中断走一个**子 AbortController**，与用户的停止信号分开——isAbort 认得一切
+ *      AbortError，不先查自己的标志位就会把"超时"误判成"用户停止"。
+ *
+ *  @param {object} opts { loopWatch }：循环检测开关（最后一次重调时由调用方放开）
+ *  @param {object} acc usage 累计器 { totals, round }（可空）：stats 事件在此累加，
+ *         onStats 收到的是"累计到此刻"的合并值；**每次尝试进入时清 round**——
+ *         被中断尝试的 usage 不计入总计（Anthropic 在流头就回输入用量，重调会重复计数）。 */
+async function readRound(cfg, messages, H, opts, acc) {
   const out = { content: '', thinking: '', stats: null, stop: '', sig: '', redacted: '', calls: [],
     recovered: false, stopped: false, clean: true, tries: 1 };
+  if (acc) acc.round = null;                       // 新的一次尝试：本次的 usage 从零记
   /* 生成耗时的两个时间点（第一个增量 / 最后一个增量）：tok/s 的分母，见读流之后的注释 */
   let tFirst = 0, tLast = 0;
   const tick = () => { const now = Date.now(); if (!tFirst) tFirst = now; tLast = now; };
-  try {
-    for await (const ev of cfg.stream(messages, cfg.opts || {}, cfg.signal)) {
-      if (ev.type === 'content') { tick(); out.content += ev.text; call(H.onDelta, { type: 'content', text: ev.text }); }
-      else if (ev.type === 'thinking') { tick(); out.thinking += ev.text; call(H.onDelta, { type: 'thinking', text: ev.text }); }
-      else if (ev.type === 'thinking_sig') { out.sig += ev.text; }
-      else if (ev.type === 'thinking_redacted') { out.redacted += ev.text; }
-      else if (ev.type === 'tool_calls') { out.calls.push(...ev.calls); if (ev.recovered) out.recovered = true; }
-      else if (ev.type === 'stats') { out.stats = ev.raw; }
-      else if (ev.type === 'stop') { out.stop = ev.reason || ''; }
-      /* 流的**结束形态**（协议适配器在流尾给一条）：clean=false 表示没拿到 finish_reason / [DONE]
-         就断了——这一轮的文本是被掐断的半截，不能当"回答完了"。 */
-      else if (ev.type === 'stream_end') { out.clean = ev.clean !== false; }
-      else if (ev.type === 'error') {
-        /* 错误事件带不带 status 都要把状态码留住：重试策略据此判断"重试有没有意义" */
-        call(H.onNotice, { kind: 'error', text: ev.message });
-        const err = new Error(ev.message);
-        if (ev.status) err.status = ev.status;
-        throw err;
-      }
+
+  /* --- 调用保护的子 controller：用户停止（父）与超时/循环（子）都汇到这里 --- */
+  const capMs = Math.max(0, Number(cfg.callTimeoutSec) || 0) * 1000;
+  const loopWatch = !!(opts && opts.loopWatch);
+  let timedOut = false;
+  let ctrl = null, timer = null, onParentAbort = null;
+  if ((capMs > 0 || loopWatch) && typeof AbortController === 'function') {
+    ctrl = new AbortController();
+    if (cfg.signal) {
+      onParentAbort = () => { try { ctrl.abort(); } catch { /* 已中止 */ } };
+      if (cfg.signal.aborted) onParentAbort();
+      else cfg.signal.addEventListener('abort', onParentAbort, { once: true });
     }
-  } catch (e) {
-    if (!isAbort(e, cfg.signal)) throw e;
-    out.stopped = true;
+    if (capMs > 0) timer = setTimeout(() => { timedOut = true; try { ctrl.abort(); } catch { /* 已中止 */ } }, capMs);
   }
-  /* **生成耗时（gen_ms）= 第一个增量 → 最后一个增量**，tok/s 的分母只能是它。
-     上游（OpenAI 兼容）只给 token 数、不给时长；拿"这一轮的 wallMs"当分母会把排队、
-     首字节延迟、以及**工具执行**全算进去——用户实测一轮 8 tokens 跑了 30 秒（含两次工具调用），
-     右上角显示成 0.3 tok/s，显然不是模型的速度。只有一个增量时量不出窗口，就不写 gen_ms
-     （界面据此**不显示** tok/s，而不是编一个数）。 */
-  if (out.stats && tLast > tFirst) out.stats = Object.assign({}, out.stats, { gen_ms: tLast - tFirst });
-  out.cut = out.clean === false;             // 被掐断（协议没给结束标记）——守卫①据此判定
-  return out;
+  /* 事件分发的现场：halt/loopMsg/since 都挂在 ctx 上，readRound 与 handlers 共享同一份 */
+  const ctx = { out, H, tick, acc, loopWatch, since: 0, loopMsg: '' };
+  const softError = () => {
+    const err = ctx.loopMsg
+      ? new Error(`检测到思考循环输出（${ctx.loopMsg}），本次调用已中断`)
+      : new Error(`单次模型调用超过最高时长 ${Math.round(capMs / 1000)} 秒，本次调用已中断`);
+    err.softRetry = true;
+    err.kind = ctx.loopMsg ? 'think_loop' : 'call_timeout';
+    return err;
+  };
+  ctx.halt = (msg) => { ctx.loopMsg = msg; if (ctrl) { try { ctrl.abort(); } catch { /* 已中止 */ } } };
+
+  try {
+    try {
+      const handlers = streamHandlers(ctx);
+      for await (const ev of cfg.stream(messages, cfg.opts || {}, ctrl ? ctrl.signal : cfg.signal)) {
+        const fn = handlers[ev.type];
+        if (fn) fn(ev);
+      }
+    } catch (e) {
+      /* **先查自己人再查停止**：超时/循环中断也抛 AbortError，isAbort 见了会当成
+         "用户停止"——那样卡死的调用会静默变成空回答，用户完全看不出为什么。 */
+      if ((timedOut || ctx.loopMsg) && !(cfg.signal && cfg.signal.aborted)) throw softError();
+      if (!isAbort(e, cfg.signal)) throw e;
+      out.stopped = true;
+    }
+    /* 流"体面"结束（没抛错）但检测已经命中：同样按中断收口（有的适配器把 abort 收成流结束） */
+    if ((timedOut || ctx.loopMsg) && !(cfg.signal && cfg.signal.aborted)) throw softError();
+    /* **生成耗时（gen_ms）= 第一个增量 → 最后一个增量**，tok/s 的分母只能是它。
+       上游（OpenAI 兼容）只给 token 数、不给时长；拿"这一轮的 wallMs"当分母会把排队、
+       首字节延迟、以及**工具执行**全算进去——用户实测一轮 8 tokens 跑了 30 秒（含两次工具调用），
+       右上角显示成 0.3 tok/s，显然不是模型的速度。只有一个增量时量不出窗口，就不写 gen_ms
+       （界面据此**不显示** tok/s，而不是编一个数）。 */
+    if (out.stats && tLast > tFirst) out.stats = Object.assign({}, out.stats, { gen_ms: tLast - tFirst });
+    out.cut = out.clean === false;             // 被掐断（协议没给结束标记）——守卫①据此判定
+    return out;
+  } finally {
+    /* 计时器与父信号监听器**任何出口都要清**：一次提问可以经历上百轮调用，
+       每轮一个监听器地挂在运行的中止信号上，不清就是泄漏（实测 233 轮的运行）。 */
+    if (timer) clearTimeout(timer);
+    if (ctrl && onParentAbort && cfg.signal) cfg.signal.removeEventListener('abort', onParentAbort);
+  }
 }
 
-/** 读一轮 + 上游出错重试 / 结束形态记录（都在这一处，别让调用方各抄一遍）。
+
+/** 软中断（超时/思考循环）的重调处理：返回 true = 已处理（继续下一次尝试）。
+ *  计数记在 st（{cfg,H,record,opts,softTries,attempt}）里——**立即**重调（不睡 30 秒，
+ *  卡死的调用等不起），最多 CALL_RETRY_MAX 次；最后一次机会放开循环检测（st.opts 上改），
+ *  让它跑到自然结束或超时兜底——防止"检测→重调→再检测"自己变成一个环。 */
+function handleSoftRetry(e, st) {
+  if (!(e && e.softRetry)) return false;
+  if (st.softTries >= CALL_RETRY_MAX) throw e;              // 保护上限已到：如实失败，不进上游重试
+  st.softTries++; st.attempt++;
+  call(st.H.onNotice, {
+    kind: e.kind, tries: st.softTries, max: CALL_RETRY_MAX,
+    text: loopText(st.cfg, e.kind === 'think_loop' ? 'thinkLoop' : 'callTimeout')
+      .replace(/\{n\}/g, String(st.softTries)).replace(/\{max\}/g, String(CALL_RETRY_MAX))
+      + `（${shortErr(e)}）`,
+  });
+  st.record(null, e, st.attempt + 1);
+  if (st.opts && st.softTries >= CALL_RETRY_MAX) st.opts.loopWatch = false;
+  return true;
+}
+
+/** 读一轮 + 中断重调（超时/思考循环，立即重调）+ 上游出错重试 / 结束形态记录
+ *  （都在这一处，别让调用方各抄一遍）。
  *  @param {(shape:object, err:Error|null)=>void} record 记录器（宿主钩子 + 攒进 out.roundShapes） */
-async function readRoundRetry(cfg, messages, H, record) {
+async function readRoundRetry(cfg, messages, H, record, acc, opts) {
   /* 等待时长与次数可按运行覆盖（单测要把它调小；正常跑一律用上面的出厂值） */
   const waitMs = Number.isFinite(cfg.retryWaitMs) && cfg.retryWaitMs >= 0 ? cfg.retryWaitMs : RETRY_WAIT_MS;
   const maxRetry = Number.isFinite(cfg.retryMax) && cfg.retryMax >= 0 ? cfg.retryMax : RETRY_MAX;
-  for (let attempt = 0; ;) {
+  const st = { cfg, H, record, opts, softTries: 0, attempt: 0 };   // 超时/循环的重调次数与上游重试分开算
+  for (; ;) {
     try {
-      const round = await readRound(cfg, messages, H);
-      round.tries = attempt + 1;
+      const round = await readRound(cfg, messages, H, opts, acc);
+      round.tries = st.attempt + 1;
       record(round, null);
       return round;
     } catch (e) {
       if (isAbort(e, cfg.signal)) throw e;                    // 用户停止：交回宿主按"已停止"收尾
+      if (handleSoftRetry(e, st)) continue;
+      const attempt = st.attempt;
       if (!(retryableError(e) && attempt < maxRetry)) { record(null, e, attempt + 1); throw e; }
-      attempt++;
+      st.attempt++;
       call(H.onNotice, {
-        kind: 'upstream_retry', tries: attempt, max: maxRetry, waitMs,
-        text: retryText(cfg, e, attempt, maxRetry, waitMs),
+        kind: 'upstream_retry', tries: st.attempt, max: maxRetry, waitMs,
+        text: retryText(cfg, e, st.attempt, maxRetry, waitMs),
       });
       if (!(await sleepAbortable(waitMs, cfg.signal))) {      // 等待期间被停止：这一轮按"已停止"收
-        const round = stoppedRound(attempt + 1);
+        const round = stoppedRound(st.attempt + 1);
         record(round, null);
         return round;
       }
@@ -316,6 +477,11 @@ async function run(cfg) {
   let todoPending = 0;                       // 任务清单还差几项（从 todo_write 的结果里读）
   let interrupts = 0, todoNudges = 0;        // 两道续轮守卫各跑过几次（都封顶，见 NUDGE_MAX）
   const roundShapes = [];                    // 每轮模型调用的结束形态（宿主落日志 / 随 out 交回）
+  /* usage 累计器（2026-10-07）：一次提问 → 最终回答之间有多次模型调用，每次都注入一遍
+     上下文。实时条与收尾条显示的都是**累计值**（输入=各次注入合计、输出=各次生成合计），
+     收尾即"本轮总计消耗"。totals=已入账的调用，round=进行中这次（成功返回才入账——
+     被中断/重调的尝试不计入，Anthropic 流头就回输入用量，不分会重复计数）。 */
+  const usageAcc = { totals: null, round: null };
 
   /* 结束形态记录：stop = finish_reason、clean = 流有没有正常收尾（不是被掐断）、
      calls = 工具调用数、tries = 这一轮试了几次（重试算多次）。 */
@@ -370,16 +536,19 @@ async function run(cfg) {
 
       call(H.onTurnStart, { round: rounds });
 
-      /* --- 调用模型（流式；上游出错自动等 30 秒重试，最多 3 次） --- */
-      const round = await readRoundRetry(cfg, sendMessages, H, recordShape);
+      /* --- 调用模型（流式；超时/思考循环中断立即重调，上游出错等 30 秒重试，各有上限） --- */
+      const round = await readRoundRetry(cfg, sendMessages, H, recordShape, usageAcc, { loopWatch: true });
       /* **先记账再判中断**：中断时这一轮已经流出来的正文/思考照常交回（一个字都不丢） */
       content += round.content;
       thinking += round.thinking;
+      /* usage 入账（2026-10-07）：这次调用成功返回了，它贡献的量并入累计（用户停止的那次
+         也照记——token 已经消耗了）；收尾的 stats 换成**累计值**（tok/s = 累计输出/累计生成时长）。 */
+      const merged = bankUsage(usageAcc, round);
+      if (merged) stats = merged;
       if (round.stopped) { stopped = true; break outer; }   // 读流期间被中止：按"停止"收尾
       const roundContent = round.content, roundThinking = round.thinking, stop = round.stop;
       const roundSig = round.sig, roundRedacted = round.redacted;   // Anthropic 思考签名 / 判红块（原样回传）
       const calls = round.calls, recovered = round.recovered;       // 工具调用（可能是从正文里认回来的）
-      if (round.stats) stats = round.stats;
       if (stop) stopReason = stop;
 
       /* --- 守卫①：流被半路掐断（没拿到 finish_reason / [DONE]）、且这一轮没有工具调用 ---
@@ -394,9 +563,7 @@ async function run(cfg) {
         if (interrupts <= NUDGE_MAX) {
           call(H.onNotice, { kind: 'interrupted',
             text: `上游把这一轮的响应掐断了（没有收到结束标记），已要求模型重新给出完整的一步（${interrupts}/${NUDGE_MAX}）…` });
-          context = context.concat([{ role: 'user', content: (cfg.texts && cfg.texts.interrupted)
-            || '【系统提醒】你上一轮的输出被上游中断了，没有传完（工具调用可能没发出来）。'
-              + '请重新给出完整的一步：直接调用工具继续，或给出最终回答。' }]);
+          context = context.concat([{ role: 'user', content: loopText(cfg, 'interrupted') }]);
           continue;                                  // 不推进 rounds：重试不算一轮工具调用
         }
         throw new Error(`上游响应连续 ${interrupts} 轮被掐断（没有收到结束标记），已停下。`
@@ -415,7 +582,7 @@ async function run(cfg) {
       if (!roundContent && !calls.length) {
         emptyRounds++;
         if (emptyRounds <= 2) {
-          const hint = cfg.texts && cfg.texts.noContent;
+          const hint = loopText(cfg, 'noContent');
           if (hint) context = context.concat([{ role: 'user', content: hint }]);   // 只进本轮工作上下文，不写进会话
           call(H.onNotice, { kind: 'empty_retry', text: `模型没有给出回答正文${roundThinking || thinking ? '（只有思考）' : ''}，正在自动重试（${emptyRounds}/2）…` });
           continue;                                  // 不推进 rounds：重试不算一轮工具调用
@@ -439,8 +606,7 @@ async function run(cfg) {
       if (calls.length && (stop === 'length' || starved)) {
         context = context.concat([asstMsg(roundContent, calls, roundThinking, roundSig, roundRedacted)]);
         for (const c of calls) {
-          const msg = (cfg.texts && cfg.texts.truncated || '工具调用「{name}」没有执行：回答被输出上限截断，请用完整参数重新发起。')
-            .replace(/\{name\}/g, c.name);
+          const msg = loopText(cfg, 'truncated').replace(/\{name\}/g, c.name);
           context = context.concat([{ role: 'tool', toolCallId: c.id, name: c.name, content: msg }]);
           trace.push({ name: c.name, label: c.name, ok: false, note: '截断未执行', args: shrinkArgs(c.args), result: msg, ms: 0 });
           call(H.onToolEnd, { call: c, result: { ok: false, text: msg, note: '截断未执行' }, ms: 0, skipped: true });
@@ -460,8 +626,7 @@ async function run(cfg) {
         /* 正文撞到输出上限、也没有工具调用：这是"回答被截断"，不能当完整回答静默收尾
            （旧实现只对"有工具调用"的截断做保护，纯正文截断用户完全看不出来）。 */
         if (stop === 'length' && roundContent) {
-          call(H.onNotice, { kind: 'truncated_answer',
-            text: (cfg.texts && cfg.texts.truncatedAnswer) || '这一轮回答撞到了输出上限，内容被截断，不是完整回答。' });
+          call(H.onNotice, { kind: 'truncated_answer', text: loopText(cfg, 'truncatedAnswer') });
         }
         /* --- 守卫②：任务清单还没做完就收尾（守卫①"被掐断"已在轮次开头处理） ---
            清单是模型自己写的、且它会忘记勾掉已完成项，所以这里只"提醒"（最多 NUDGE_MAX 次），
@@ -470,10 +635,7 @@ async function run(cfg) {
           todoNudges++;
           call(H.onNotice, { kind: 'todo_pending',
             text: `任务清单还有 ${todoPending} 项没完成，已提醒模型继续（${todoNudges}/${NUDGE_MAX}）…` });
-          context = context.concat([{ role: 'user', content: ((cfg.texts && cfg.texts.todoPending)
-            || '【系统提醒】你的任务清单还有 {n} 项没完成。请继续做下一步（调用工具）；'
-              + '如果确实要停下（例如在等用户确认、或清单本身已过时），就直接说明情况，不要再调用工具。')
-            .replace(/\{n\}/g, String(todoPending)) }]);
+          context = context.concat([{ role: 'user', content: loopText(cfg, 'todoPending').replace(/\{n\}/g, String(todoPending)) }]);
           continue;
         }
         // 模型直接把最终回答给出来了。此刻把积压的插话（Steering）取出来：
@@ -486,8 +648,7 @@ async function run(cfg) {
         /* 上游没把工具调用放进结构化字段、被我们从正文里认回来的：给用户与模型各留一句说明。
            （模型那边不必多说——调用照常执行；用户那边要说清"为什么正文里出现过一串标记"。） */
         if (recovered) {
-          call(H.onNotice, { kind: 'text_tool_calls',
-            text: (cfg.texts && cfg.texts.textCalls) || '模型把工具调用写成了正文（上游没有解析成结构化调用），已自动识别并执行。' });
+          call(H.onNotice, { kind: 'text_tool_calls', text: loopText(cfg, 'textCalls') });
         }
         /* --- 工具调用：五步生命周期 --- */
         context = context.concat([asstMsg(roundContent, calls, roundThinking, roundSig, roundRedacted)]);
@@ -508,7 +669,7 @@ async function run(cfg) {
              现在：失败不入册（下次照跑）、读类工具不拦（重复读无害）、
              只有"成功过的写类/命令类空转"才回绝。 */
           if (cfg.guardDuplicate !== false && !repeatAllowed(c.name) && seen.has(fp)) {
-            const dup = (cfg.texts && cfg.texts.guard || '你已经用完全相同的参数调用过 {name}，结果同上。').replace(/\{name\}/g, c.name);
+            const dup = loopText(cfg, 'guard').replace(/\{name\}/g, c.name);
             result = { ok: true, text: dup, note: '重复调用' };
           } else {
             try {
@@ -546,11 +707,14 @@ async function run(cfg) {
             /* 真实字数（**未截断前**）：追踪条据此显示"模型实际收到多少 / 这里只显示前 N 字"。
                上限只截记录正文、不截这个计数——否则界面上会变成"无论读了多少都显示 4000"。 */
             resultChars: fullText.length,
-            /* 可下载文件清单（deliver_file）：内核自己的 trace 也带上，与实时追踪条同一形状——
-               两条 trace 都可能有下游消费者（收尾合并 / 落盘），少一处就会"卡片只在一边有"。 */
+            /* 以下四个扩展字段与实时追踪条（run-loop 的 loopHooks）**同一形状**——
+               两条 trace 都可能有下游消费者（子智能体转录 / 落盘 / 界面），少一个字段就是
+               "卡片只在一边有"（undoRef/todo 曾缺，子智能体转录的 +N/−M 卡点不开比对，2026-10-06 审计）。
+               result 已是 asResult 的规一化产物（files 过了 FILES_CAP、undoRef 过了白名单），原样带上。 */
             ...(result.files && result.files.length ? { files: result.files } : {}),
-            /* 写入/删除的行数（服务端 undo.wrap 记的）：同上，两条 trace 必须同形 */
             ...(result.lines ? { lines: result.lines } : {}),
+            ...(result.undoRef ? { undoRef: result.undoRef } : {}),
+            ...(result.todo !== undefined ? { todo: result.todo } : {}),
           });
           context = context.concat([{ role: 'tool', toolCallId: c.id, name: c.name, content: result.text }]);
         };
@@ -562,8 +726,7 @@ async function run(cfg) {
         rounds++;
         hasMoreToolCalls = rounds < maxRounds;
         if (!hasMoreToolCalls) {
-          const t = (cfg.texts && cfg.texts.maxRounds) || '已达本轮工具调用上限，停止继续调用';
-          call(H.onNotice, { kind: 'max_rounds', text: t });
+          call(H.onNotice, { kind: 'max_rounds', text: loopText(cfg, 'maxRounds') });
         }
         pending = takeSteering();
       }

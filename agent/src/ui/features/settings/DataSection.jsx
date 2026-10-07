@@ -11,7 +11,7 @@ import { Button } from '../../components/ui/button.jsx';
 import { FieldRow, FieldValue, SectionTitle } from '../../components/ui/field.jsx';
 import { Spinner } from '../../components/ui/spinner.jsx';
 import { toast } from '../../components/ui/toast.jsx';
-import { downloadText, NoteBox } from './parts.jsx';
+import { downloadText, GroupCard, NoteBox } from './parts.jsx';
 
 /* ============================ 四块内容 ============================ */
 
@@ -35,14 +35,14 @@ function StatsCard({ sessions, msgTotal, cur, historyLen }) {
   return (
     <>
       <SectionTitle>会话统计</SectionTitle>
-      <div className="mx-4 overflow-hidden rounded-lg border border-border">
+      <GroupCard className="mx-4">
         <FieldRow label="对话条数"><FieldValue>{fmtCount(sessions.length)}</FieldValue></FieldRow>
         <FieldRow label="消息总数"><FieldValue>{fmtCount(msgTotal)}</FieldValue></FieldRow>
         <FieldRow label="当前对话消息数"><FieldValue>{fmtCount(historyLen)}</FieldValue></FieldRow>
         <FieldRow label="当前对话">
           <FieldValue className="max-w-[16rem]">{cur ? cur.title || '新对话' : '（无）'}</FieldValue>
         </FieldRow>
-      </div>
+      </GroupCard>
     </>
   );
 }
@@ -81,7 +81,7 @@ function ContextCard({ ctx, streaming, historyLen, busy, compacted, count, onCom
     <>
       <SectionTitle>上下文</SectionTitle>
       <div className="space-y-2 px-4">
-        <div className="overflow-hidden rounded-lg border border-border">
+        <GroupCard>
           <div className="px-4 pt-3">
             <div className="flex items-baseline justify-between">
               <span className="text-sm font-medium text-foreground">上下文用量</span>
@@ -98,7 +98,7 @@ function ContextCard({ ctx, streaming, historyLen, busy, compacted, count, onCom
             <FieldRow label="历史消息"><FieldValue>{fmtCount(ctx.histTok)} token</FieldValue></FieldRow>
           </div>
           {streaming ? <p className="px-4 pb-2 text-xs text-subtle">正在生成：压缩要等这一轮结束后再做。</p> : null}
-        </div>
+        </GroupCard>
 
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" onClick={onCompact} disabled={busy || streaming || !historyLen}>

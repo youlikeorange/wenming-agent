@@ -431,9 +431,9 @@ export function createAgentDefs() {
     init,
     FS_READ_NAMES, FS_WRITE_NAMES, FS_DELETE_NAMES, PLUGIN_TOOL_NAMES, DELIVER_NAMES, SCREEN_TOOL_NAMES,
     CONFIRM_SEQUENTIAL, FS_LABEL, labelOf,
-    searchToolDef, searchOn, skillsActive, skillsToolDefs, memoryToolDefs,
+    searchOn, skillsToolDefs, memoryToolDefs,
     pluginToolDefs, pluginsAllowed, activeToolDefs,
-    subagentOn, subagentToolDefs, subagentToolDefsFor,
+    subagentToolDefsFor,
     pluginGateNote,   // 插件闸门被挡下时给模型的说明（见文件头「唯一的行为变化」）
   };
 }

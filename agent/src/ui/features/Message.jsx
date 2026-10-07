@@ -6,6 +6,7 @@ import { deleteRound, regenerateLast } from '../state/session.js';
 import { undoRun } from '../state/run.js';
 import { undoGateHelp } from '../state/undo-help.js';
 import { askConfirm } from '../state/host.js';
+import { useApp } from '../state/store.js';
 import { Button } from '../components/ui/button.jsx';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../components/ui/collapsible.jsx';
 import { toast } from '../components/ui/toast.jsx';
@@ -64,33 +65,39 @@ function Thinking({ text, streaming }) {
   );
 }
 
+/** 错误块 + 「重试这一轮」（从 Meta 抽出：这一块自带三层条件，留在 Meta 里就超复杂度棘轮） */
+function ErrorBlock({ msg, canRetry, busy }) {
+  return (
+    <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
+      <p className="text-xs leading-relaxed text-destructive">{msg.error}</p>
+      {canRetry ? (
+        <Button
+          variant="outline" size="sm" className="mt-1.5 h-6 gap-1 px-2 text-[11px]"
+          disabled={busy}
+          title={busy ? '生成中：先等这一轮结束' : '按原提问重新问一次'}
+          onClick={() => regenerateLast()}
+        >
+          <RefreshCw className="size-3.5" />重试这一轮
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
 /** 元信息 + 未跑完 / 空回答的说明（元信息只用一行小字，不做徽章）
  *  **失败要看得见**（2026-10-01）：模型/上游出错时（401、429、断网、上下文超限…）服务端会把
  *  错误挂在这条消息上（msg.error），这里画成一个带边框的错误块并把「重试这一轮」放在手边——
  *  旧实现只有一行红字，用户最容易的反应是"它卡住了"而不是"它失败了"。 */
 function Meta({ msg, stale, canRetry, busy }) {
   /* 耗时**不在这里**显示：`RunFooter` 用一句人话写「本轮用时 1 分 23 秒」，
-     这里只留 tok/s 与 tokens（两处都写一遍时间，用户会以为是两个不同的数）。 */
+     这里只留 tok/s 与 tokens（两处都写一遍时间，用户会以为是两个不同的数）。
+     tokens 是**本轮总计**（内核把各次调用的 usage 累计好了，2026-10-07）。 */
   const parts = statsParts(msg.stats, null, msg.content);
   const empty = !msg.streaming && !stale && !msg.content && !msg.thinking
     && !(msg.trace || []).length && !msg.error;
   return (
     <>
-      {msg.error ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2">
-          <p className="text-xs leading-relaxed text-destructive">{msg.error}</p>
-          {canRetry ? (
-            <Button
-              variant="outline" size="sm" className="mt-1.5 h-6 gap-1 px-2 text-[11px]"
-              disabled={busy}
-              title={busy ? '生成中：先等这一轮结束' : '按原提问重新问一次'}
-              onClick={() => regenerateLast()}
-            >
-              <RefreshCw className="size-3.5" />重试这一轮
-            </Button>
-          ) : null}
-        </div>
-      ) : null}
+      {msg.error ? <ErrorBlock msg={msg} canRetry={canRetry} busy={busy} /> : null}
       {stale ? (
         <p className="text-[11px] leading-relaxed text-warning">
           {msg.content ? '这一轮没有跑完（生成被中断），下面是已经生成的部分。' : '这一轮没有跑完（生成被中断），没有内容保存下来，可以重新提问。'}
@@ -98,7 +105,7 @@ function Meta({ msg, stale, canRetry, busy }) {
       ) : null}
       {empty ? <p className="text-[11px] text-subtle">这一轮没有返回内容（模型空回答）。</p> : null}
       {parts.length ? (
-        <p className="text-[11px] tabular-nums text-subtle" title="tok/s · tokens（服务端返回 usage 时才有）">
+        <p className="text-[11px] tabular-nums text-subtle" title="tok/s · 本轮总计 tokens（各次模型调用累计；服务端返回 usage 时才有）">
           {parts.join(' · ')}
         </p>
       ) : null}
@@ -159,11 +166,70 @@ async function confirmUndo(undo) {
  *  比对抽屉三个入口共用一份（各写一份必然漂移），这里只保留调用。 */
 
 /** 运行时长（一句话，tabular-nums 让数字对齐） */
-function WallTime({ ms }) {
+function WallTime({ ms, title = '这一轮从开始到结束的总时长（服务端计，落盘在消息上）' }) {
   return (
-    <span className="tabular-nums" title="这一轮从开始到结束的总时长（服务端计，落盘在消息上）">
+    <span className="tabular-nums" title={title}>
       本轮用时 <span className="text-muted-foreground">{fmtDuration(ms)}</span>
     </span>
+  );
+}
+
+/** 实时条 tokens 的两档数值：真实 usage 优先；否则按现有约定估算并标 ≈（同 statsParts 的口径）。
+ *  数值是**累计口径**（2026-10-07 用户定的）：一次提问会经历多次模型调用、每次都注入一遍上下文，
+ *  输入 = 各次注入合计、输出 = 各次生成合计；内核在 stats 事件里就给合并值，这里只管显示。 */
+function liveUsage(msg, ctxUsed) {
+  const s = msg.stats || {};
+  const inReal = Number(s.prompt_eval_count) > 0;
+  const outReal = Number(s.eval_count) > 0;
+  const estLen = String(msg.content || '').length + String(msg.thinking || '').length;
+  return {
+    in: inReal ? String(s.prompt_eval_count) : (ctxUsed > 0 ? '≈' + ctxUsed : ''),
+    out: outReal ? String(s.eval_count) : (estLen > 0 ? '≈' + Math.max(1, Math.round(estLen / 1.6)) : ''),
+  };
+}
+
+/** 实时收尾条的各个块（用时/输入/输出，null 项不显示）——全部条件集中在这一个纯函数里 */
+function liveFooterParts(msg, st) {
+  const rec = (st.runs || {})[st.activeSessId];
+  const startedAt = (rec && rec.startedAt) || 0;
+  const ctxUsed = (st.ctx && Number(st.ctx.used)) || 0;
+  const u = liveUsage(msg, ctxUsed);
+  const ms = Date.now() - startedAt;
+  const parts = [];
+  if (startedAt && ms > 0) parts.push({
+    label: '本轮用时', value: fmtDuration(ms),
+    tip: '这一轮已经跑了多久（从运行开始到现在，逐秒走表）',
+  });
+  if (u.in) parts.push({ label: '输入', value: u.in, tip: '输入 tokens：本轮所有模型调用的注入合计（每次调用都带一遍上下文），标 ≈ 为估算' });
+  if (u.out) parts.push({ label: '输出', value: u.out + ' tokens', tip: '输出 tokens：本轮所有模型调用的生成合计，收尾后就是本轮总计消耗，标 ≈ 为估算' });
+  return { startedAt, parts };
+}
+
+/**
+ * 运行中的收尾条：与结束后 RunFooter 同一位置、同一格式——「本轮用时」+ 输入/输出 tokens。
+ * 用时从 `state.runs[当前会话].startedAt`（服务端造运行时的时间戳，同机无偏差）起算，
+ * interval 在本组件里每秒走一次表——只重渲这一行，不牵动整条消息。
+ */
+function LiveFooter({ msg }) {
+  const streaming = !!msg.streaming;                // 结束后由 RunFooter 接管（同一位置、最终用时）
+  const st = useApp();
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    if (!streaming) return undefined;               // 只在跑的时候走表
+    const t = setInterval(() => setTick((x) => x + 1), 1000);
+    return () => clearInterval(t);
+  }, [streaming]);
+  if (!streaming) return null;
+  const { parts } = liveFooterParts(msg, st);
+  if (!parts.length) return null;
+  return (
+    <div data-live-run className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[11px] text-subtle">
+      {parts.map((p) => (
+        <span key={p.label} className="tabular-nums" title={p.tip}>
+          {p.label} <span className="text-muted-foreground">{p.value}</span>
+        </span>
+      ))}
+    </div>
   );
 }
 
@@ -243,7 +309,7 @@ function Message({ msg, index, stale, isLastRound, busy }) {
   /* Markdown 渲染是整条消息最贵的一步，且结果只取决于正文：
      用 useMemo 把"工具条更新 / 状态变化引起的重渲"挡在渲染之外（否则每来一条追踪条
      就要把整篇正文重新解析一遍）。流式的正文变化仍会照常重算——频率由
-     session.js 的 touchSoon 节流到 ~12fps。 */
+     ui/state/run.js 的 touchSoon 节流到 ~12fps。 */
   const raw = String(msg.content || '');
   const clipped = raw.length > MAX_RENDER;
   const shown = useMemo(() => (clipped ? raw.slice(0, MAX_RENDER) : raw), [raw, clipped]);
@@ -357,6 +423,8 @@ function Message({ msg, index, stale, isLastRound, busy }) {
           </p>
         ) : null}
         <Meta msg={msg} stale={stale} canRetry={isLastRound} busy={busy} />
+        {/* 运行中的实时收尾条（streaming 时显示）；结束后 LiveFooter 让位给 RunFooter（最终用时） */}
+        <LiveFooter msg={msg} />
         <RunFooter msg={msg} />
         <Actions>{actions}</Actions>
       </div>
@@ -373,7 +441,7 @@ function Message({ msg, index, stale, isLastRound, busy }) {
  *  攒到收尾（busy 翻转）才一次性冒出来。实测证据：整轮只发生 3 次 DOM 更新，
  *  期间网络侧 112 个分片是**逐步到达**的（5.7s→28.1s），正文 593 字一次到位。
  *
- *  代价这件事由上游控制：session.js 的 `touchSoon()` 已把重绘节流到 ~12fps，
+ *  代价这件事由上游控制：ui/state/run.js 的 `touchSoon()` 已把重绘节流到 ~12fps，
  *  流式消息跟着它走就是设计意图；历史消息（streaming 已清）照旧靠浅比较免渲。
  *  旧实现把 ChatView 传的 `tick` 当"死参数"删掉（审计 C10，理由是"Message 没解构它"），
  *  恰好抽掉了唯一能让流式那条重绘的开关 —— props 里没有它，memo 却看得见它。 */
@@ -389,7 +457,7 @@ export const undoRevOf = (m) => {
 
 export default memo(Message, (a, b) => (
   a.msg === b.msg && a.index === b.index && a.stale === b.stale
-  && a.isLastRound === b.isLastRound && a.busy === b.busy && a.canRetry === b.canRetry
+  && a.isLastRound === b.isLastRound && a.busy === b.busy
   && a.undoRev === b.undoRev
   && !(b.msg && b.msg.streaming)
 ));

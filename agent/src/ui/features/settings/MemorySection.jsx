@@ -4,6 +4,7 @@ import { Download, Pencil, Plus, Trash2, Upload } from 'lucide-react';
 import { useApp, touch } from '../../state/store.js';
 import { addMemory, removeMemory, memoryExport, memoryImport, setParam } from '../../state/settings.js';
 import { refreshCurrentMemory } from '../../state/projects.js';
+import { askConfirm } from '../../state/host.js';
 import { Memory } from '../../../core/memory.js';
 import { fmtTime } from '../../lib/format.js';
 import { TOOL_FIELDS, resolve } from '../../../core/params.js';
@@ -12,7 +13,7 @@ import { Button } from '../../components/ui/button.jsx';
 import { FieldDesc, SectionTitle } from '../../components/ui/field.jsx';
 import { ImeInput, ImeTextarea } from '../../components/ui/ime-field.jsx';
 import { toast } from '../../components/ui/toast.jsx';
-import { downloadText, EmptyHint, NoteBox, ParamRow } from './parts.jsx';
+import { downloadText, EmptyHint, GroupCard, NoteBox, ParamRow } from './parts.jsx';
 
 const SETTING_KEYS = ['tool_mem_on', 'mem_auto', 'session_mem_on', 'mem_inject', 'project_mem_inject', 'tool_mem_max'];
 const parseTags = (s) => String(s || '').split(/[,，\s]+/).map((x) => x.trim()).filter(Boolean).slice(0, 8);
@@ -56,7 +57,13 @@ function MemoryCard({ entry, scope }) {
               <Pencil />
             </Button>
             <Button size="icon" variant="ghost" className="size-6 text-destructive" aria-label="删除"
-              onClick={() => { removeMemory(entry.id, scope); toast('已删除该条记忆'); }}>
+              onClick={async () => {
+                const r = await askConfirm({ title: '删除记忆？',
+                  body: `记忆「${entry.title}」将被删除，不可恢复。`, okText: '删除', danger: true });
+                if (!r.ok) return;
+                removeMemory(entry.id, scope);
+                toast('已删除该条记忆');
+              }}>
               <Trash2 />
             </Button>
           </div>
@@ -203,11 +210,11 @@ export default function MemorySection() {
 
       <section>
         <SectionTitle>记忆设定</SectionTitle>
-        <div className="overflow-hidden rounded-lg border border-border">
+        <GroupCard>
           {SETTING_KEYS.map((key) => (
             <ParamRow key={key} field={TOOL_FIELDS[key]} value={all[key]} onChange={(v) => setParam(key, v, '')} />
           ))}
-        </div>
+        </GroupCard>
       </section>
 
       <div className="px-4">

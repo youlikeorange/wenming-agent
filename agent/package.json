@@ -1,7 +1,7 @@
 {
   "name": "wenming-agent-ui",
   "private": true,
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "智能体 Agent 子项目构建工程（React + Tailwind + shadcn 风格组件；core 层零框架、可 Node 单测）",
   "type": "module",
   "scripts": {
@@ -12,7 +12,8 @@
     "dup": "jscpd --min-tokens 40 --reporters console --ignore \"**/node_modules/**\" src",
     "cycles": "madge --circular --extensions js,jsx src",
     "check": "npm run lint && npm run lint:budget && npm run dup && npm run cycles && npm run test",
-    "lint:budget": "node scripts/lint-budget.mjs"
+    "lint:budget": "node scripts/lint-budget.mjs",
+    "inventory": "node scripts/gen-inventory.mjs"
   },
   "dependencies": {
     "class-variance-authority": "^0.7.1",

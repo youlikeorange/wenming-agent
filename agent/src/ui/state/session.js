@@ -12,8 +12,6 @@
  */
 import { state, patch, touch, defaultSettings } from './store.js';
 import { Store as StoreApi } from '../../core/store.js';
-import { EP } from '../../core/endpoints.js';
-import { get } from '../../core/http.js';
 import { Presence } from '../../core/presence.js';
 import { ctxLimitOf } from '../../core/params.js';
 import { newMsgId } from '../../core/sessions.js';
@@ -26,11 +24,16 @@ import { ToolRunner } from '../../core/tool-runner.js';
 import * as Run from './run.js';
 import {
   me, activeProvider, paramsOf, promptBlocks, guardStreaming, adoptProject,
-  curSess, persistSession, saveSettings, askConfirm, hooks, promptDraftCount,
+  curSess, persistSession, saveSettings, askConfirm, hooks, promptDraftCount, fetchProjectMemory,
 } from './host.js';
 import { toast } from '../components/ui/toast.jsx';
 
 /* ============================ 初始化 ============================ */
+
+/** 未登录 / 拉取失败时的界面初始形状（原先两个失败分支各 patch 一份逐字相同的） */
+const bootBare = (info) => {
+  patch({ ready: true, info, settings: defaultSettings(), sessions: [], history: [], projects: [], currentProjectId: '' });
+};
 
 export async function bootstrap() {
   const r = await StoreApi.init();
@@ -38,13 +41,10 @@ export async function bootstrap() {
   Presence.onChange(() => patch({ presence: { active: Presence.isActive(), owner: Presence.ownerOf(), enforce: Presence.enforced() } }));
   Presence.start();
 
-  if (!r.loggedIn) {
-    patch({ ready: true, info: r.info, settings: defaultSettings(), sessions: [], history: [], projects: [], currentProjectId: '' });
-    return;
-  }
+  if (!r.loggedIn) { bootBare(r.info); return; }
   const d = await StoreApi.pull();
   if (!d) {
-    patch({ ready: true, info: r.info, settings: defaultSettings(), sessions: [], history: [], projects: [], currentProjectId: '' });
+    bootBare(r.info);
     toast('服务端数据拉取失败：先用默认设置启动，可稍后刷新重试', 'err');
     return;
   }
@@ -61,6 +61,24 @@ export async function bootstrap() {
   Run.reattach(state.activeSessId).catch(() => {});
 }
 
+/** 从服务端数据里挑"当前会话"：preferSess（用户正在看的）优先，服务端 currentSess 指针其次，
+ *  最后退回第一条。原先内联在 applyServerData 里（复杂度 20 的主要来源之一，2026-10-06 拆出）。 */
+function pickActiveSession(d, projects, opts) {
+  const sessions = Array.isArray(d.sessions) ? d.sessions : [];
+  const wantId = opts.preferSess || (d.settings && d.settings.currentSess);
+  return sessions.find((s) => s.id === wantId) || sessions[0] || null;
+}
+
+/** 项目事实（名字/根目录/记忆文件夹位置）灌给 core：注入区块与 memory_write 的 scope="project" 都靠它。
+ *  统一走 adoptProject（与 applyServerLight / projects.js 同一份实现与同一份顺序——
+ *  原先这里手搓"Memory.setProject → StoreApi.setProjectId"，与 adoptProject 的顺序刚好相反，
+ *  靠"不带 entries 就不 emit"才没出事）。返回当前项目对象（写 state.currentProjectId 用）。 */
+function hydrateProjectFacts(d, projects) {
+  const cur = (projects || []).find((p) => p.id === d.currentProject) || null;
+  adoptProject(cur);
+  return cur;
+}
+
 /** 把服务端数据灌进 core 层的登记表与界面状态
  *  @param {object} d 服务端 /agent/store 的响应
  *  @param {{preferSess?:string}} [opts] preferSess = 优先保持"用户正在看的会话"（整份重拉时用：
@@ -68,10 +86,7 @@ export async function bootstrap() {
 export function applyServerData(d, opts = {}) {
   Prompts.load(d.prompts || {});
   const projects = Array.isArray(d.projects) ? d.projects : [];
-  const curProject = projects.find((p) => p.id === d.currentProject) || null;
-  const sessions = Array.isArray(d.sessions) ? d.sessions : [];
-  const wantId = opts.preferSess || (d.settings && d.settings.currentSess);
-  const active = sessions.find((s) => s.id === wantId) || sessions[0] || null;
+  const active = pickActiveSession(d, projects, opts);
   /* 会话记忆必须跟着**当前会话**灌进 core（第二个实参）。
      原先这里硬编码 []，而同函数的下一段明明加载了 active.msgs —— 于是刷新后会话记忆永远是空的，
      紧接着任何一次 persistSession（发送/改名/回撤/换 provider…）都会把这份空数组写回会话对象；
@@ -82,11 +97,8 @@ export function applyServerData(d, opts = {}) {
      refreshCurrentMemory / applyCurrentProject）。这里先把指针与项目事实灌好，
      条目由调用方紧接着的 syncProjectWithSession() 从服务端取回来。 */
   Memory.load(d.memory || [], active ? (active.memory || []) : []);
-  // 项目事实（名字/根目录/记忆文件夹位置）灌给 core：注入区块与 memory_write 的 scope="project" 都靠它
-  Memory.setProject(curProject
-    ? { id: curProject.id, name: curProject.name, root: curProject.root, memoryDir: curProject.memoryDir }
-    : null);
-  StoreApi.setProjectId(curProject ? curProject.id : '');
+  const curProject = hydrateProjectFacts(d, projects);
+  const sessions = Array.isArray(d.sessions) ? d.sessions : [];
   patch({
     settings: d.settings || defaultSettings(),
     sessions,
@@ -127,15 +139,6 @@ async function whenWritesSettled() {
   return false;
 }
 
-/** 读某个项目的记忆条目（服务端真源）；失败返回 null（调用方保持现状，别用空数组覆盖）。 */
-async function fetchProjectEntries(id) {
-  if (!id) return null;
-  try {
-    const r = await get(`${EP.projectsMemory}?id=${encodeURIComponent(id)}`, { timeoutMs: 10000 });
-    return Array.isArray(r.entries) ? r.entries : null;
-  } catch { return null; }
-}
-
 /** 把"轻量拉取"（GET /agent/store?light=1）的结果装进界面与 core。
  *  **不碰会话/历史/当前会话指针**：那些是这一页的浏览状态，后台刷新不该改它们。 */
 async function applyServerLight(d, projectId) {
@@ -146,7 +149,10 @@ async function applyServerLight(d, projectId) {
   Memory.load(d.memory || [], Memory.serialize('session'));
   if (Array.isArray(d.projects)) patch({ projects: d.projects });
   if (!projectId || String(state.currentProjectId || '') !== projectId) return;
-  const entries = await fetchProjectEntries(projectId);
+  /* 取数走 host.js 的唯一一份 fetchProjectMemory（原先 session.js 与 projects.js 各有一份
+     同端点、同超时、同兜底的拷贝——而且 session.js 不能 import projects.js（会成环），
+     所以唯一落点只能是两者都依赖的 host.js，2026-10-06 归一）。 */
+  const entries = await fetchProjectMemory(projectId, { quiet: true });
   if (entries) adoptProject((state.projects || []).find((x) => x.id === projectId) || Memory.projectMeta, entries);
 }
 
@@ -220,6 +226,14 @@ hooks.onRunEnded = (sessionId) => {
   if (state.activeSessId === sessionId) refreshAllSoon(sessionId);
 };
 hooks.onPullLatest = (sessionId) => refreshAll({ onlyIfSession: sessionId });
+/* run.js 的孤儿占位清理之后要落盘（2026-10-06 修复：原先它调的钩子名在 hooks 表里不存在，
+   清理结果一直没人写盘）。当前会话走 persistSession（history 就是它的）；
+   后台会话的 msgs 已在会话对象上就地改好，直接排队——persistSession 对非当前会话是空转。 */
+hooks.persistSession = (sessionId) => {
+  if (!sessionId || sessionId === state.activeSessId) { persistSession(sessionId); return; }
+  const s = state.sessions.find((x) => x.id === sessionId);
+  if (s) { StoreApi.queueSession(s); touch(); }
+};
 /* 掉线期间某条会话跑完了（hub 重连时快照里已经没有它）：本地那份正文可能不完整，
    以服务端落盘的那份为准整份重拉（force：当前会话正在流式也要拉，拉完 rehydrate 会接回去）。 */
 hooks.onSessionStale = () => { refreshAll({ force: true }).catch(() => { /* 下次载入还会拉 */ }); };
@@ -292,15 +306,26 @@ function saveCurrentSess(id) {
   saveSettings();
 }
 
-export function ensureSession() {
-  let s = curSess();
-  if (s) return s;
-  s = { id: newId(), title: '新对话', ts: Date.now(), provider: (activeProvider() || {}).id || '', project: projectOf(), msgs: [] };
-  const sessions = [s, ...state.sessions];
-  patch({ sessions, activeSessId: s.id, history: [] });
+/** 建一条空会话对象（归属当前项目） */
+const newSessionRecord = (opts) => ({
+  id: newId(), title: '新对话', ts: Date.now(),
+  provider: (activeProvider() || {}).id || '', project: projectOf(opts), msgs: [],
+});
+
+/** 新会话挂到列表最前 + 排队落盘 + 写"当前会话"指针（ensureSession / newSession 共用的三连）。
+ *  replace = 这条会话已在列表里（newSession 复用当前空会话的那条路），先摘掉旧位置。 */
+function addSession(s, replace) {
+  const rest = replace ? state.sessions.filter((x) => x.id !== s.id) : state.sessions;
+  patch({ sessions: [s, ...rest], activeSessId: s.id, history: [] });
   StoreApi.queueSession(s);
   saveCurrentSess(s.id);
   return s;
+}
+
+export function ensureSession() {
+  const s = curSess();
+  if (s) return s;
+  return addSession(newSessionRecord());
 }
 
 export function newSession(opts) {
@@ -314,14 +339,9 @@ export function newSession(opts) {
   const cur = curSess();
   if (cur && !(cur.msgs || []).length) {
     cur.project = projectOf(opts);
-    patch({ sessions: [cur, ...state.sessions.filter((x) => x.id !== cur.id)], activeSessId: cur.id, history: [] });
-    StoreApi.queueSession(cur);
-    saveCurrentSess(cur.id);
+    addSession(cur, true);
   } else {
-    const s = { id: newId(), title: '新对话', ts: Date.now(), provider: (activeProvider() || {}).id || '', project: projectOf(opts), msgs: [] };
-    patch({ sessions: [s, ...state.sessions], activeSessId: s.id, history: [] });
-    StoreApi.queueSession(s);
-    saveCurrentSess(s.id);
+    addSession(newSessionRecord(opts));
   }
   Prompts.clearLoaded();
   Memory.clearSession();
@@ -336,7 +356,6 @@ export function selectSession(id) {
      要拦的是"改这条会话内容"的动作（清空/回撤/归档），它们各自有 guardStreaming。 */
   const s = state.sessions.find((x) => x.id === id);
   if (!s) return;
-  Run.detach();                     // 兼容旧语义（统一口下是空操作）
   patch({ activeSessId: id, history: (s.msgs || []).slice() });
   Prompts.clearLoaded();
   /* 只换"会话记忆"那一段：全局与项目记忆由各自的来源决定，不随会话变。
@@ -374,22 +393,35 @@ export function renameSession(id, title) {
   touch();
 }
 
+/** 会话标题的展示兜底（归档/错误提示共用一条口径） */
+const titleOf = (s) => (s && s.title) || '对话';
+/** 错误对象 → 一句话（toast 里只该有一行人话） */
+const errMsg = (e) => (e && e.message) || '请求失败';
+
 /** 归档一个对话（侧栏的按钮，原先是"删除"）：搬进账号目录里的归档区，**不丢任何内容**，
  *  随时可以在「设置 → 存档」里恢复或彻底删除。所以这里不问确认——可逆的操作不该拦人。 */
 export async function archiveSession(id) {
   /* 只拦"正在跑的那条会话"：归档会让服务端把它搬走，而运行还在往里写（会写回一个已归档的会话） */
   if (Run.isRunning(id)) { toast('这条对话正在生成回答：先点「停止」或等它结束再归档', 'info'); return; }
   const s = state.sessions.find((x) => x.id === id);
+  /* **先问服务端再动本地**（2026-10-07 审计）：旧实现先把会话从界面拿掉、再归档——
+     服务端失败（未登录/网络断了）时函数照旧走到「已归档」的成功提示，用户以为进了存档，
+     刷新才发现会话还在原地。StoreApi.archiveSession 失败会抛错（不再吞成 null）。 */
+  try {
+    await StoreApi.archiveSession(id);
+  } catch (e) {
+    toast(`归档失败：「${titleOf(s)}」没有搬进存档（${errMsg(e)}），请重试`, 'err');
+    return;
+  }
   const wasActive = state.activeSessId === id;
   const sessions = state.sessions.filter((x) => x.id !== id);
   patch({ sessions });
-  await StoreApi.archiveSession(id);          // 先取消它在途的落盘，再让服务端搬走
   if (wasActive) {
     const next = sessions[0] || null;
     if (next) selectSession(next.id);
     else { patch({ activeSessId: null, history: [] }); ensureSession(); }
   }
-  toast(`已归档「${(s && s.title) || '对话'}」——设置 → 存档 里可以恢复`, 'ok');
+  toast(`已归档「${titleOf(s)}」——设置 → 存档 里可以恢复`, 'ok');
 }
 
 export function clearChat() {
@@ -405,12 +437,17 @@ export function clearChat() {
   toast('已清空当前对话');
 }
 
+/** 最后一条用户消息的下标（回撤/重新生成共用同一份倒序找法；没有就是 -1） */
+const lastUserIndex = (h) => {
+  for (let k = h.length - 1; k >= 0; k--) if (h[k].role === 'user') return k;
+  return -1;
+};
+
 /** 回撤最后一轮（提问放回输入框） */
 export async function undoLast() {
   if (guardStreaming('回撤')) return;
   const h = state.history;
-  let i = -1;
-  for (let k = h.length - 1; k >= 0; k--) if (h[k].role === 'user') { i = k; break; }
+  const i = lastUserIndex(h);
   if (i < 0) { toast('没有可回撤的提问'); return; }
   const text = h[i].content;
   if (!(await askConfirm({ title: '回撤最后一轮？', body: '这条提问与它后面的回答都会从对话里移除（提问会放回输入框）。', okText: '回撤' })).ok) return;
@@ -420,8 +457,9 @@ export async function undoLast() {
   return text;
 }
 
-/** 删除某一轮的整对消息（用户 + 回答） */
+/** 删除某一轮的整对消息（用户 + 回答）。组件层已有确认框，这里再加生成闸门与其它"改历史"动作对齐 */
 export function deleteRound(msgIndex) {
+  if (guardStreaming('删除这一轮')) return;
   const h = state.history.slice();
   const i = msgIndex >= 0 && h[msgIndex] && h[msgIndex].role === 'user' ? msgIndex : h.findIndex((m, k) => k >= msgIndex && m.role === 'user');
   if (i < 0) return;
@@ -461,10 +499,9 @@ export function stop() {
 
 /** 重新生成最后一轮回答 */
 export async function regenerateLast() {
-  if (state.streaming) return;
+  if (guardStreaming('重新生成')) return;      // 与清空/回撤同一道闸（原先裸判静默返回，2026-10-06 统一）
   const h = state.history;
-  let i = -1;
-  for (let k = h.length - 1; k >= 0; k--) if (h[k].role === 'user') { i = k; break; }
+  const i = lastUserIndex(h);
   if (i < 0) { toast('没有可重新生成的提问'); return; }
   const text = h[i].content;
   patch({ history: h.slice(0, i) });
@@ -515,7 +552,6 @@ function startTurn(p, text) {
   return { p, text, defs, injected, live, p0, before, t0: (globalThis.performance || Date).now() };
 }
 
-/** 中断收尾：已流出的内容一律保留，一个字都没有才删占位；被顶掉的那次不落盘（别覆盖对方） */
 /** **启动**失败（服务端没接上 / 已被另一段运行占用 / 未登录）：把占位换成一句可读的错误。
  *  注意分工：一旦 start 成功，这一轮的收尾就归服务端管（见 ui/state/run.js 的 settle）。
  *  客户端"跑到一半断线"不是失败——那只是观众走了，服务端继续跑并把内容留下。 */

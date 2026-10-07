@@ -22,6 +22,7 @@ export const EP = {
   projectsBrowse: `${BASE}/projects/browse`,   // GET  ?path=  列子目录（从"起点"开始，只能在起点内往下走）
   projectsMemory: `${BASE}/projects/memory`,   // GET  ?id= / POST { id, entries }
   projectCreate: `${BASE}/projects/create`,    // POST { root, name }
+  projectMkdir: `${BASE}/projects/mkdir`,      // POST { parent?, name }（选择器的「新建文件夹」；parent 空 = 起点根）
   projectRename: `${BASE}/projects/rename`,    // POST { id, name }
   projectCurrent: `${BASE}/projects/current`,  // POST { id }
   projectDelete: `${BASE}/projects/delete`,    // POST { id }（连记忆文件夹一起删，不可恢复）

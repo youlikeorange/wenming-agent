@@ -71,13 +71,17 @@
   --scrollbar: #2e2e33;
 }
 
-/* 强调色（只换主色与配套的浅底，其余令牌不动） */
+/* 强调色（只换主色与配套的浅底，其余令牌不动；blue 是内置默认，没有专门规则，
+   直接取各主题的 --primary 出厂值——浅色 #4f46e5、深色 #6366f1，都是靛蓝系） */
 [data-accent="violet"] { --primary: #8b5cf6; --ring: #a78bfa; }
 [data-accent="emerald"] { --primary: #10b981; --ring: #34d399; }
 [data-accent="amber"] { --primary: #f59e0b; --ring: #fbbf24; }
 [data-accent="rose"] { --primary: #f43f5e; --ring: #fb7185; }
 [data-accent="cyan"] { --primary: #06b6d4; --ring: #22d3ee; }
-[data-theme="light"][data-accent] { --accent-fg: var(--primary); }
+/* 选中态的文字色跟随强调色（侧栏选中会话、设置分区、大纲当前项…）。
+   曾经只在浅色这么做（[data-theme="light"][data-accent]）——深色下这些最显眼的
+   "选中态"全是中性灰，切强调色看起来像没生效（2026-10-06 用户报的）。两套主题统一。 */
+[data-accent] { --accent-fg: var(--primary); }
 
 /* 界面密度（消息间距与控件高度） */
 [data-density="compact"] { --row-h: 2rem; --msg-gap: 0.75rem; }

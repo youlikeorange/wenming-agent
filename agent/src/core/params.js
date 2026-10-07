@@ -53,6 +53,12 @@ export const FIELDS = {
     tip: 'OpenAI 协议下发 reasoning_effort；Anthropic 协议开启扩展思考并给出思考预算（低 4K / 中 8K / 高 16K token）。'
       + '"默认" = 完全不下发，交给服务端自己决定。',
   },
+  callTimeout: {
+    key: 'call_timeout_sec', label: '单次调用最高时长（秒）', group: 'generation', kind: 'number', def: 600, min: 0, max: 86400, step: 30, always: false,
+    tip: '一次模型调用（从发起请求到流式输出结束）允许的最长秒数，超时会被中断并自动重调'
+      + '（最多 2 次，之后报错收尾）。防的是模型卡死/无限循环把整轮吊住。0 = 不限。'
+      + '思考循环（同一内容反复输出）另有独立检测，不依赖这个时长。',
+  },
   ctxLimit: {
     label: '上下文上限（本界面的用量环）', group: 'context', kind: 'number', def: 1000000, min: 512, step: 512, always: false,
     tip: '只影响本界面的用量显示与自动压缩阈值——它不发给模型（协议里没有这个字段）。'
@@ -196,6 +202,11 @@ export const TOOL_FIELDS = {
  *  审计前 core/agent-defs.js 里另有一份手抄副本（零消费、还得靠人肉同步），已删除。 */
 export const TOOL_DEFAULTS = Object.fromEntries(Object.entries(TOOL_FIELDS).map(([k, f]) => [k, f.def]));
 
+/** 追踪条"可下载文件清单"的条数上限（deliver_file 这类工具的 result.files）。
+ *  唯一真源在这里：core/agent.js 的 asFiles 据它截断（两条消费路——实时事件与内核 trace——
+ *  都会立刻过 asFiles，服务端响应层不再各截一次，2026-10-06 审计收敛）。 */
+export const FILES_CAP = 20;
+
 /* ============================ 取值解析 ============================ */
 
 const isBlank = (v) => v === undefined || v === null || v === '';
@@ -318,6 +329,14 @@ export function ctxLimitOf(settings, provider, params) {
   const fromProvider = Number(provider && provider.ctxLimit);
   if (Number.isFinite(fromProvider) && fromProvider >= 512) return Math.floor(fromProvider);
   return FIELDS.ctxLimit.def;
+}
+
+/** 单次调用最高时长（秒）：只看参数（每模型一份）；0/负数 = 不限。
+ *  服务端还有一道环境变量硬上限（AGENT_LLM_CALL_MAX_SEC），在宿主接线处钳制。 */
+export function callTimeoutOf(params) {
+  const v = Number(params && params.callTimeout);
+  if (!Number.isFinite(v) || v <= 0) return 0;
+  return Math.floor(v);
 }
 
 /** 额外请求体：JSON 文本 → 对象（解析失败返回 null，调用方给提示） */

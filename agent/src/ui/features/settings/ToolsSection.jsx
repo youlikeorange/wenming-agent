@@ -18,7 +18,7 @@ import { Button } from '../../components/ui/button.jsx';
 import { FieldDesc, SectionTitle } from '../../components/ui/field.jsx';
 import { ImeInput } from '../../components/ui/ime-field.jsx';
 import { toast } from '../../components/ui/toast.jsx';
-import { EmptyHint, NoteBox, ParamRow } from './parts.jsx';
+import { EmptyHint, GroupCard, ListRow, NoteBox, ParamRow } from './parts.jsx';
 
 /* 工具开关组（TOOL_FIELDS 的 group → 标题）；access 组在下面单独画 */
 const GROUPS = [
@@ -102,17 +102,19 @@ function SearchBuiltinRow() {
 }
 
 function ToolGroup({ gid, title, all, searchOn }) {
-  const entries = Object.entries(TOOL_FIELDS).filter(([, f]) => f.group === gid);
+  /* agent_access 由上面的 AccessLevels 卡片渲染（四张卡的形态，2026-10-03 去重）——
+     这里必须排除它，否则同一个键同屏出现两个控件（2026-10-06 审计 A3：去重不变量曾被这条漏网打破）。 */
+  const entries = Object.entries(TOOL_FIELDS).filter(([key, f]) => f.group === gid && !(gid === 'access' && key === 'agent_access'));
   if (!entries.length) return null;
   return (
     <section>
       <SectionTitle>{title}</SectionTitle>
-      <div className="overflow-hidden rounded-lg border border-border">
+      <GroupCard>
         {gid === 'search' ? <SearchBuiltinRow /> : null}
         {entries.map(([key, field]) => (
           <ToolField key={key} fieldKey={key} field={field} value={all[key]} searchOff={gid === 'search' && !searchOn} />
         ))}
-      </div>
+      </GroupCard>
     </section>
   );
 }
@@ -151,13 +153,13 @@ function RootsCard({ roots, defaults, start, onAction }) {
           （当前起点 <span className="font-mono">{start || '(未设置)'}</span>），与这里的范围无关。
         </NoteBox>
         {roots.length ? roots.map((r) => (
-          <div key={r} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5">
+          <ListRow key={r}>
             <span className="min-w-0 flex-1 truncate font-mono text-xs text-foreground">{r}</span>
             <Button size="icon" variant="ghost" className="size-7 text-destructive" aria-label={`移除 ${r}`}
               onClick={() => onAction('remove', { path: r })} title="移除">
               <Trash2 />
             </Button>
-          </div>
+          </ListRow>
         )) : <EmptyHint>还没有可访问目录：文件工具与命令默认在第一个目录里工作。</EmptyHint>}
 
         <div className="flex items-center gap-2">

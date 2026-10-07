@@ -1,4 +1,4 @@
 {
-  "maxWarnings": 77,
+  "maxWarnings": 76,
   "note": "eslint warning 的上限；只减不增（见 scripts/lint-budget.mjs）"
 }

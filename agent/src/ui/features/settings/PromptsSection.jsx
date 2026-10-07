@@ -7,7 +7,8 @@ import {
   addPromptEntry, removePromptEntry, addSkill, removeSkill, clearPromptDraft, setSkillFields,
 } from '../../state/settings.js';
 import { Prompts } from '../../../core/prompts.js';
-import { sendPreview, promptDraftCount } from '../../state/host.js';
+import { sendPreview, promptDraftCount, askConfirm, promptBlocks } from '../../state/host.js';
+import { fmtNum } from '../../lib/format.js';
 import { cn } from '../../lib/utils.js';
 import { Badge } from '../../components/ui/badge.jsx';
 import { Button } from '../../components/ui/button.jsx';
@@ -17,9 +18,11 @@ import { ImeInput, ImeTextarea } from '../../components/ui/ime-field.jsx';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select.jsx';
 import { Switch } from '../../components/ui/switch.jsx';
 import { toast } from '../../components/ui/toast.jsx';
-import { ChoiceGroup, EmptyHint, NoteBox } from './parts.jsx';
+import { ChoiceGroup, EmptyHint, GroupCard, ListRow, NoteBox } from './parts.jsx';
 
 const GROUP_ORDER = ['system', 'skills', 'tools', 'loop', 'compact', 'templates'];
+/** 「用途」输入框的占位文案（SkillMetaFields 与 AddSkillForm 共用，原先两处逐字重复） */
+const DESC_PLACEHOLDER = '用途（给模型看的一句话，决定它要不要加载）';
 const KIND_LABEL = {
   system: '系统', skill: '技能', tool: '工具说明', schema: '参数描述',
   helper: '拼装片段', loop: '循环', compact: '压缩', template: '模板',
@@ -95,7 +98,7 @@ function SkillMetaFields({ item, name, description, auto }) {
         </span>
       </div>
       <ImeInput value={description} onChange={(e) => setPromptDraft(item.id, { description: e.target.value })}
-        className="h-8 text-xs" placeholder="用途（给模型看的一句话，决定它要不要加载）" />
+        className="h-8 text-xs" placeholder={DESC_PLACEHOLDER} />
     </>
   );
 }
@@ -130,7 +133,16 @@ function applyItem(item, view) {
   clearPromptDraft(item.id);        // 两条路径都要丢掉草稿（技能不走覆盖表，得手动清）
 }
 
-function removeItem(item) {
+/** 删除内置/技能条目（不可逆）：与全站约定一致先过 askConfirm（原先直接删 + toast，2026-10-06 补上） */
+async function removeItem(item) {
+  const r = await askConfirm({
+    title: isCustomSkill(item) ? '删除技能？' : '删除条目？',
+    body: isCustomSkill(item)
+      ? `技能「${item.name}」与其正文将被删除，不可恢复（正文可先复制一份留底）。`
+      : `条目「${item.name}」将被删除，不可恢复。`,
+    okText: '删除', danger: true,
+  });
+  if (!r.ok) return;
   if (isCustomSkill(item)) removeSkill(item.id);
   else removePromptEntry(item.id);
   toast('已删除该条目', 'ok');
@@ -201,9 +213,9 @@ function PromptGroup({ id, items, footer }) {
   return (
     <section>
       <SectionTitle>{Prompts.groupTitles[id] || id}</SectionTitle>
-      <div className="overflow-hidden rounded-lg border border-border">
+      <GroupCard>
         {items.map((item) => <PromptItem key={item.id} item={item} />)}
-      </div>
+      </GroupCard>
       {footer ? <div className="mt-2">{footer}</div> : null}
     </section>
   );
@@ -227,7 +239,7 @@ function AddSkillForm() {
   return (
     <div className="space-y-2 rounded-md border border-border px-3 py-2">
       <ImeInput value={name} onChange={(e) => setName(e.target.value)} className="h-8 text-xs" placeholder="技能名称" />
-      <ImeInput value={description} onChange={(e) => setDescription(e.target.value)} className="h-8 text-xs" placeholder="用途（给模型看的一句话，决定它要不要加载）" />
+      <ImeInput value={description} onChange={(e) => setDescription(e.target.value)} className="h-8 text-xs" placeholder={DESC_PLACEHOLDER} />
       <ImeTextarea rows={4} value={text} onChange={(e) => setText(e.target.value)} placeholder="技能正文" />
       <div className="flex items-center gap-2">
         <Button size="sm" onClick={add}>添加</Button>
@@ -281,7 +293,12 @@ function AddEntryForm() {
 /* ============================ 发送预览 ============================ */
 
 function PreviewDialog({ open, onOpenChange }) {
-  const data = open ? sendPreview() : null;
+  const st = useApp();
+  /* 预览在 open 且"登记表/草稿变了"时才重组装（原先每次 store 重渲都重算一遍，浪费但不致错）。
+     依赖是**有意**列的：sendPreview 不直接读它们（它在 host.js 里现读 state），但预览内容
+     确实随登记表与草稿变化——这是数据依赖，不是遗留依赖。 */
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const data = useMemo(() => (open ? sendPreview() : null), [open, st.revision, st.promptDrafts]);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl">
@@ -317,23 +334,37 @@ export default function PromptsSection() {
   const items = useMemo(() => { void revision; return Prompts.all(); }, [revision]);
   const extras = items.filter(isExtra);
   const [previewOpen, setPreviewOpen] = useState(false);
-  const total = items.reduce((n, it) => n + (it.enabled ? String(it.text || '').length : 0), 0);
+  /* 徽章的两个数都要**如实**（2026-10-06 用户问"111854 字是否属实"后修正口径）：
+     · 条数 = 登记表条目数（内置 + 用户技能/条目），属实；
+     · 旧文案"启用后共 N 字"是**登记正文的合计**，不是每轮发给模型的量——按需技能的正文
+       根本不注入（每轮只给名字与用途的目录，正文要 use_skill 才加载）、loop/模板/压缩类
+       只在特定时刻发一条、schema 进的是工具定义而不是 system。真实每轮进 system 的字数
+       用 promptBlocks() 现算——它与实际发送走同一份实现（core/assemble.js）。 */
+  const onCount = items.filter((it) => it.enabled).length;
+  const injected = promptBlocks().blocks.reduce((n, b) => n + String(b.text || '').length, 0);
   /* 未应用的草稿数（真源在 state.promptDrafts）：旧实现调的是一个**从未存在**的 Prompts.isDirty()，
-     于是这个徽章永远不显示、草稿也没人提醒（审计发现）。 */
+     于是这个徽章永远不显示、草稿也没人提醒（审计发现）。
+     响应性靠"任何 store 变化本组件都会重渲"这个事实——若改成细粒度订阅（只认 revision），
+     草稿的徽章会静默失灵（草稿不 bump revision）。 */
   const pending = promptDraftCount();
 
   return (
     <div className="space-y-4 pb-6">
       <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
-        <Badge variant="secondary">{items.length} 条登记 / 启用后共 {total} 字</Badge>
+        <Badge variant="secondary" title="条数 = 登记表条目；「本轮注入」按当前开关现算（按需技能只发目录，正文要用时才加载）">
+          {items.length} 条登记（启用 {onCount}）· 本轮注入约 {fmtNum(injected)} 字
+        </Badge>
         {pending ? <Badge variant="warning">有 {pending} 处未应用的修改</Badge> : null}
         <span className="flex-1" />
         <Button size="sm" variant="outline" onClick={() => setPreviewOpen(true)}><Eye />本轮发送预览</Button>
       </div>
 
       <NoteBox>
-        这里列出所有会发给模型的文本：改动先落在草稿上，点「应用」才注入；关掉开关 = 该条永不注入。
-        空白正文会被跳过。技能在 ② 组里增删改：展开条目可改名称/用途/加载方式/正文，组尾可新建技能。
+        这里列出**所有**会发给模型的文本——工具使用说明、每个工具定义里的描述（「参数描述」）、
+        循环提示与拼装片段都在列。**你对它们有完整权限**：查看、改写、恢复默认、启停，
+        没有任何"藏在代码里改不了"的提示词。改动先落在草稿上，点「应用」才注入；
+        关掉开关 = 该条永不注入，空白正文会被跳过。
+        技能在 ② 组里增删改：展开条目可改名称/用途/加载方式/正文，组尾可新建技能。
       </NoteBox>
 
       {GROUP_ORDER.map((gid) => (
@@ -345,14 +376,20 @@ export default function PromptsSection() {
         <SectionTitle>自定义条目</SectionTitle>
         <div className="space-y-2 px-4">
           {extras.length ? extras.map((e) => (
-            <div key={e.id} className="flex items-center gap-2 rounded-md border border-border px-3 py-1.5">
+            <ListRow key={e.id}>
               <span className="min-w-0 flex-1 truncate text-sm text-foreground">{e.name}</span>
               <Badge variant="secondary">{GROUP_LABEL[e.group] || e.group}</Badge>
               <Button size="icon" variant="ghost" className="size-7 text-destructive" aria-label={`删除 ${e.name}`}
-                onClick={() => { removePromptEntry(e.id); }}>
+                onClick={async () => {
+                  const r = await askConfirm({ title: '删除条目？',
+                    body: `自定义条目「${e.name}」将被删除，不可恢复。`, okText: '删除', danger: true });
+                  if (!r.ok) return;
+                  removePromptEntry(e.id);
+                  toast('已删除该条目', 'ok');
+                }}>
                 <Trash2 />
               </Button>
-            </div>
+            </ListRow>
           )) : <EmptyHint>还没有自定义条目。</EmptyHint>}
           <AddEntryForm />
         </div>

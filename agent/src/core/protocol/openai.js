@@ -5,7 +5,7 @@
  *
  *  统一事件流：thinking | content | tool_calls | stats | stop | error
  */
-import { upstreamChat, upstreamModels, refOf } from './transport.js';
+import { upstreamChat, upstreamModels, refOf, resolveTools, errorText } from './transport.js';
 import { sseLines, safeJson, stopReason } from './sse.js';
 import { thinkSplitter } from './think.js';
 import { textCallSplitter } from './textcalls.js';
@@ -35,10 +35,7 @@ export function toTools(tools) {
 /** 请求体构造（canonical 参数 → 线格式） */
 export function buildBody(cfg, messages, params, opts = {}) {
   const p = params || {};
-  /* 工具定义的口径兼容：宿主既可能放在 opts.tools（旧口径：opts 里参数与工具混装），
-     也可能放进 params.tools。漏掉的后果很严重——模型收不到工具清单，会把调用**写成正文**
-     （实测：正文里出现 <tool_call><function=read_file>… 的 XML，而界面上没有任何工具卡片）。 */
-  const tools = (opts && opts.tools) || p.tools || [];
+  const tools = resolveTools(p, opts);
   const body = {
     model: cfg.model,
     messages: messages.map(toMsg),
@@ -70,8 +67,8 @@ export async function listModels(cfg, signal) {
 
 /** 上游报错时把**它自己说的话**带上：只给一句"HTTP 401"，用户既不知道是密钥错了、
  *  额度用完了还是模型名写错了，也就无从修起（2026-10-01：要求"LLM 出问题要能在会话里
- *  反映出来"）。读一小段响应体，尽量抽出 error.message / message / detail，读不动就退回状态码。
- *  这里是**失败响应**，没有 SSE 流要留给下游解析，把 body 读掉是安全的。 */
+ *  反映出来"）。读响应体、尽量抽出 error.message / error.type / message / detail（读不动
+ *  就退回纯文本压缩成一行）。读体与拼头在 transport.js 的 errorText（与 anthropic 同口径）。 */
 function pickMessage(txt) {
   try {
     const j = JSON.parse(txt);
@@ -81,17 +78,12 @@ function pickMessage(txt) {
   return txt.replace(/\s+/g, ' ').slice(0, 300);
 }
 
-async function errorText(r) {
-  const head = 'HTTP ' + r.status;
-  let txt = '';
-  try { txt = String(await r.text()).slice(0, 800); } catch { return head; }
-  return txt.trim() ? head + '：' + pickMessage(txt) : head;
-}
-
 export async function* chat(cfg, messages, params, opts = {}) {
   const body = buildBody(cfg, messages, params, opts);
   const r = await upstreamChat(refOf(cfg), body, opts.signal, opts.sessionId);
-  if (!r.ok) yield { type: 'error', message: await errorText(r), status: r.status };
+  /* 非 2xx 必须 return（2026-10-06 审计 A1）：errorText 已把响应体读掉，继续走
+     sseLines 会对已消费的 body 再 getReader()，直接 TypeError。 */
+  if (!r.ok) { yield { type: 'error', message: await errorText(r, pickMessage), status: r.status }; return; }
   // 流式 tool_calls 分片累积（按 index 还原分片顺序）
   const acc = new Map();   // index -> {id,name,argsStr}
   const takeCalls = () => [...acc.entries()].sort((a, b) => a[0] - b[0]).map(([i, c]) => ({

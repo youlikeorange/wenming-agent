@@ -22,7 +22,8 @@ import { Store } from '../../core/store.js';
 import { Presence } from '../../core/presence.js';
 import { ToolRunner } from '../../core/tool-runner.js';
 import { EP } from '../../core/endpoints.js';
-import { patch, state, touch } from './store.js';
+import { patch, state, touch, SETTING_KEYS } from './store.js';
+import { get } from '../../core/http.js';
 import { fmtChars } from '../lib/format.js';
 import { toast } from '../components/ui/toast.jsx';
 
@@ -83,10 +84,8 @@ export function promptBlocks() {
 
 const toApiMsg = Assemble.toApiMsg;
 
-/** 组装发给模型的 messages：system 区块 + （压缩摘要）+ 历史 + 本条输入 */
-export function buildMessages(extraUser) {
-  return Assemble.buildMessages(assembleEnv(), extraUser);
-}
+/* buildMessages 的 UI 包装已删（2026-10-06 审计：零调用方——预览走 sendPreview()，
+   实际发送在服务端；core/assemble.buildMessages 仍在，由它自己与服务端调用）。 */
 
 /** 「发送预览」用：区块清单 + 实际 messages（JSON）+ 工具 schema */
 export function sendPreview() {
@@ -132,6 +131,21 @@ export function persistSession(sessionId) {
   touch();
 }
 
+/** 读某个项目的记忆条目（服务端真源；唯一一份——原先 session.js 与 projects.js 各有一份
+ *  同端点同超时的拷贝，而那两个模块互相 import 会成环，唯一落点只能是本文件）。
+ *  失败返回 **null**（调用方据此保持现状，绝不拿空数组当"这个项目没有记忆"）；
+ *  quiet = 不弹提示（后台刷新用）。entries 为 null 与 [] 的区别就在这里。 */
+export async function fetchProjectMemory(id, { quiet } = {}) {
+  if (!id) return null;
+  try {
+    const d = await get(`${EP.projectsMemory}?id=${encodeURIComponent(id)}`, { timeoutMs: 10000 });
+    return Array.isArray(d.entries) ? d.entries : [];
+  } catch (e) {
+    if (!quiet) toast('读取项目记忆失败：' + e.message, 'err');
+    return null;
+  }
+}
+
 export const saveSettings = () => { Store.queueSettings(settingsForSave()); };
 
 /** 交给服务端的配置快照（密钥字段只在"新填/改过"时带上，其余保持服务端原值）
@@ -149,10 +163,12 @@ function settingsForSave() {
     if (p.keyDirty) out.apiKey = p.apiKey || null;
     return out;
   });
-  return {
-    providers: list, activeId: s.activeId, params: s.params, paramsByModel: s.paramsByModel,
-    theme: s.theme, ui: s.ui, tools: s.tools, currentSess: s.currentSess,
-  };
+  /* 顶层键清单来自 store.js 的 SETTING_KEYS（与 defaultSettings 同一份形状推出）；
+     providers 单独覆盖（它要按 keyDirty 过滤）。服务端 DEFAULTS 那一份没法共享，靠测试对齐。 */
+  return Object.assign(
+    Object.fromEntries(SETTING_KEYS.map((k) => [k, s[k]])),
+    { providers: list },
+  );
 }
 
 /* ============================ 追踪条（工具调用 / 提示 / 压缩） ============================ */
@@ -187,8 +203,6 @@ export function fillTraceStrip(token, info) {
   Object.assign(t, {
     label: info.label || t.label, ok: info.ok !== false, note: info.note || '',
     state: 'done',
-    /* kind 一旦定为 notice 就不再改回 tool：收尾合并时据此把提示原样留在实时位置上
-       （见 ui/lib/trace.js 的 mergeTrace）。 */
     kind: info.kind || t.kind || 'tool',
     /* 参数同样要瘦身：write_file 的参数里带着整个文件内容，直接挂在追踪条上
        = 每次落盘序列化几 MB、展开详情时在 DOM 里放几 MB（写大文件卡死的主因之一）。
@@ -212,8 +226,7 @@ export function askConfirm(opts) {
     const item = Object.assign({}, opts, { resolve });
     if (prev) {
       // 串行队列：把"后面还有 N 个确认在排队"写进正文，避免用户以为同一条被问了两次
-      const queued = state.confirmQueue || (state.confirmQueue = []);
-      queued.push(item);
+      state.confirmQueue.push(item);
       return;
     }
     patch({ confirm: item });
@@ -249,8 +262,8 @@ export const hooks = {
   openLogin: () => {},
   onNeedBind: () => {},
   onNeedUnlock: () => {},
-  onStatus: null,
-  scrollBottom: () => {},
+  /* onStatus / scrollBottom 两个钩子已删（2026-10-06 审计）：前者从未被赋值（真实消费方
+     是 wireCore 里紧挨着的 patch），后者两处接线零调用（生成中不自动滚是既定产品决策）。 */
   /* 切会话 → 对齐"当前项目"（实现落在 ui/state/projects.js：它才知道项目清单与项目记忆端点）。
      回填为 no-op 时最坏情况是"当前项目不跟着会话走"（就是加这条钩子之前的老行为），不会出错。 */
   onSessionChange: null,
@@ -271,6 +284,10 @@ export const hooks = {
      留着空实现是**刻意的**：没接线时勾选框点了也不生效，但绝不会因此放宽任何闸门。 */
   onExecAllow: () => {},
   onSkillRemember: () => {},
+  /* 会话要落盘了（实现在 ui/state/session.js——只有它知道 history 属于哪条会话）。
+     带 sessionId：后台会话的落盘不能走 persistSession 的当前会话分支（那是空转）。
+     2026-10-06 修复：run.js 的孤儿占位清理原先调的就是这个名字，但表里没有它 = 静默空操作。 */
+  persistSession: null,
 };
 
 /** 装配 core 层：进程启动时调一次（main.jsx） */
@@ -279,15 +296,17 @@ export function wireCore() {
     Prompts, val2, me, bound, AGENT_API: hasServer() ? EP.info : '',
   });
 
+  /* ToolRunner 的注入项里界面**真正会触发的只有 loadAgentStatus**（session.js 拉绑定/白名单）
+     ——工具执行都发生在服务端托管运行里。其余注入项保留是因为 core 工具层与单测/服务端
+     共用同一份实现（tools.test.mjs 直接喂假依赖），删掉反而要把执行层拆成两份。 */
   ToolRunner.init({
     Prompts, Memory, AgentPolicy, AgentDefs, val2, me, accessOf,
     AGENT_API: hasServer() ? EP.info : '',
-    runSignal: () => (state.abortSignal || null),
     save: saveSettings, persistSession,
     updateCtxMeter: () => {},                 // React 自己按 state 重绘
     toast: (msg, type) => toast(msg, type),
     openLogin: (...a) => hooks.openLogin(...a),
-    onStatus: (s) => { patch({ agentStatus: s }); if (hooks.onStatus) hooks.onStatus(s); },
+    onStatus: (s) => { patch({ agentStatus: s }); },
     onNeedBind: () => hooks.onNeedBind(),
     onNeedUnlock: (osUser) => hooks.onNeedUnlock(osUser),
     askConfirm,
@@ -322,7 +341,6 @@ export function wireCore() {
     toast: (msg, type) => toast(msg, type),
     getInjectedBlocks: () => promptBlocks(),
     getActiveToolDefs: () => AgentDefs.activeToolDefs(),
-    abortSignal: () => (state.abortSignal || null),
     toApiMsg,
     val2,                                     // 压缩输入单条上限（record_compact_chars）等内设上限走它
   });
@@ -369,40 +387,63 @@ export function wireCore() {
 }
 
 /* ---- 两个确认框的文案（与服务端闸门配套）---- */
+
+/* 插件确认框按工具名查表（标题/正文/按钮文案）——原先是一条 if 链（复杂度 24），
+   新增一个要确认的写类工具就得往链子中间插。**顺序无关**，查不到就走"JSON 全文"兜底。 */
+const PLUGIN_CONFIRM = {
+  run_command: (a) => ({
+    title: '执行命令？', okText: '执行',
+    body: `$ ${a.command || ''}\n\n（以绑定账号的权限执行；cwd 默认是可访问目录的第一项）`,
+  }),
+  delete_path: (a) => ({
+    title: '删除？', okText: '删除',
+    body: `路径：${a.path || ''}\n${a.recursive ? '⚠ 递归删除：连目录内容一起删，不可恢复' : '（目录非空时会拒绝，需显式 recursive）'}`,
+  }),
+  edit_file: (a) => ({
+    title: '写入文件？', okText: '写入',
+    body: `路径：${a.path || ''}\n\n--- 原文本 ---\n${String(a.old_text || '').slice(0, 600)}\n\n--- 新文本 ---\n${String(a.new_text || '').slice(0, 600)}`,
+  }),
+  write_file: (a) => ({
+    title: '写入文件？', okText: '写入',
+    body: `路径：${a.path || ''}\n大小：${fmtChars(a.content)}\n\n${String(a.content || '').slice(0, 800)}`,
+  }),
+  move_file: (a) => ({
+    /* 2026-10-07 审计：原先抄 write_file 的「写入文件？」——动作其实是移动/重命名，标签与行为不符 */
+    title: '移动/重命名文件？', okText: '移动',
+    body: `${a.source || ''}\n  →  ${a.destination || ''}`,
+  }),
+};
+
 function askConfirmPlugin(name, args, from) {
   const a = args || {};
-  const isCmd = name === 'run_command';
-  const isDelete = name === 'delete_path';
-  const title = isCmd ? '执行命令？' : isDelete ? '删除？' : '写入文件？';
-  let body;
-  if (isCmd) body = `$ ${a.command || ''}\n\n（以绑定账号的权限执行；cwd 默认是可访问目录的第一项）`;
-  else if (isDelete) body = `路径：${a.path || ''}\n${a.recursive ? '⚠ 递归删除：连目录内容一起删，不可恢复' : '（目录非空时会拒绝，需显式 recursive）'}`;
-  else if (name === 'edit_file') body = `路径：${a.path || ''}\n\n--- 原文本 ---\n${String(a.old_text || '').slice(0, 600)}\n\n--- 新文本 ---\n${String(a.new_text || '').slice(0, 600)}`;
-  else if (name === 'write_file') body = `路径：${a.path || ''}\n大小：${fmtChars(a.content)}\n\n${String(a.content || '').slice(0, 800)}`;
-  else if (name === 'move_file') body = `${a.source || ''}\n  →  ${a.destination || ''}`;
-  else body = JSON.stringify(a, null, 2).slice(0, 800);
-  const rule = AgentPolicy.ruleFor(a.command || '') ;
-  const canRemember = isCmd && !!rule;
-  return askConfirm({
-    title, body, okText: isCmd ? '执行' : isDelete ? '删除' : '写入', from,
-    remember: canRemember ? { label: `以后「${rule}」开头的命令直接执行，不再问我` } : undefined,
-  });
+  const build = PLUGIN_CONFIRM[name];
+  const base = build ? build(a)
+    : { title: '写入文件？', okText: '写入', body: JSON.stringify(a, null, 2).slice(0, 800) };
+  /* 只有命令才给「以后不再问」：允许清单按"整条命令的前缀"匹配，写类工具没有这个概念 */
+  const rule = name === 'run_command' ? AgentPolicy.ruleFor(a.command || '') : null;
+  return askConfirm(Object.assign({}, base, { from },
+    rule ? { remember: { label: `以后「${rule}」开头的命令直接执行，不再问我` } } : {}));
+}
+
+/* 技能导入的确认框（三技能动作里形状最特殊的一个，单独成函数） */
+function askConfirmSkillImport(args, name, from) {
+  const a = args || {};
+  const items = Array.isArray(a.items) ? a.items : [];
+  const body = `从 ${a.path || '(未给路径)'} 安装 ${items.length} 个技能（同名会改写）：\n\n`
+    + items.map((s) => `· ${s.name}：${String(s.description || '(未写用途)').slice(0, 70)}［${s.auto === false ? '常驻' : '按需'}］`).join('\n');
+  return askConfirm({ title: '模型要安装技能', body, okText: '安装', from,
+    remember: { label: '以后这类技能改动不用再问我（只在访问级别为「自定」时生效）' } });
 }
 
 function askConfirmSkill(action, name, args, from) {
+  if (action === '导入') return askConfirmSkillImport(args, name, from);
   const a = args || {};
-  if (action === '导入') {
-    const items = Array.isArray(a.items) ? a.items : [];
-    const body = `从 ${a.path || '(未给路径)'} 安装 ${items.length} 个技能（同名会改写）：\n\n`
-      + items.map((s) => `· ${s.name}：${String(s.description || '(未写用途)').slice(0, 70)}［${s.auto === false ? '常驻' : '按需'}］`).join('\n');
-    return askConfirm({ title: '模型要安装技能', body, okText: '安装', from,
-      remember: { label: '以后这类技能改动不用再问我' } });
-  }
-  const title = action === 'delete' ? '删除技能？' : '模型要写技能';
-  const body = action === 'delete'
+  const isDelete = action === 'delete';
+  const title = isDelete ? '删除技能？' : '模型要写技能';
+  const body = isDelete
     ? `技能「${a.name || name}」将被删除，不可恢复。`
     : `名称：${a.name || name || '(未命名)'}\n用途：${a.description || ''}\n加载方式：${a.auto === false ? '常驻注入' : '按需加载'}\n\n--- 正文 ---\n${String(a.text || '').slice(0, 1200)}`;
-  return askConfirm({ title, body, okText: action === 'delete' ? '删除' : '保存', from, remember: { label: '以后这类技能改动不用再问我' } });
+  return askConfirm({ title, body, okText: isDelete ? '删除' : '保存', from, remember: { label: '以后这类技能改动不用再问我（只在访问级别为「自定」时生效）' } });
 }
 
 /** 托管运行的确认（服务端把"要问什么"发过来，文案仍旧用上面那三个确认框：

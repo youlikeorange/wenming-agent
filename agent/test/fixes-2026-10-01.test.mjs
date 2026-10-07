@@ -206,13 +206,15 @@ test('压缩开着时 transformMessages 走压缩（不会误走裁剪）', asyn
 
 /* ============================ assemble / 请求参数 ============================ */
 
-test('★ buildRequestOptions：两端同一份（参数表 + 工具 + extraBody + 模型兜底）', async () => {
+test('★ buildRequestOptions：两端同一份（参数表 + 工具 + 模型兜底；extraBody 不经此通道）', async () => {
   const { Assemble } = await import('../src/core/assemble.js');
   const defs = [{ function: { name: 'read_file' } }];
   const o = Assemble.buildRequestOptions({ params: { temperature: 0.5 }, defs, model: 'm1', extraBody: '{"a":1}' });
   assert.equal(o.temperature, 0.5);
   assert.equal(o.tools, defs);
-  assert.equal(o.__extraBody, '{"a":1}');
+  // extraBody 不再透传成 opts.__extraBody（全仓无人消费，2026-10-06 审计删除）：
+  // 生效通道是服务端 run-upstream 的 applyExtraBody（存储配置）/ ref.extraBody（临时配置）。
+  assert.equal('__extraBody' in o, false, 'opts 不携带 __extraBody');
   assert.equal(o.model, 'm1');
   const o2 = Assemble.buildRequestOptions({ params: {}, defs: [] });
   assert.equal('tools' in o2, false, '没有工具就不带 tools 字段');

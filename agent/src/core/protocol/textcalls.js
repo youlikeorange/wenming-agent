@@ -51,7 +51,7 @@ const PARAM_ATTR = /(?:^|\s)parameter\s*=\s*"([^"]*)"/;
 const SHORT_ATTR = /^=\s*"([^"]*)"/;
 
 /** 一个块最多等多大（没闭合又超过它 = 模型写到一半断了，原样吐回正文） */
-export const MAX_BLOCK_CHARS = 4 * 1024 * 1024;
+const MAX_BLOCK_CHARS = 4 * 1024 * 1024;
 /** 正文模式下最多留多少个字符等标记拼完 */
 const MAX_HOLD = 96;
 

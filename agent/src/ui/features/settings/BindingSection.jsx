@@ -10,7 +10,7 @@ import { ImeInput } from '../../components/ui/ime-field.jsx';
 import { Label } from '../../components/ui/label.jsx';
 import { Spinner } from '../../components/ui/spinner.jsx';
 import { toast } from '../../components/ui/toast.jsx';
-import { NoteBox } from './parts.jsx';
+import { GroupCard, NoteBox } from './parts.jsx';
 import { askConfirm } from '../../state/host.js';
 
 const METHOD_TEXT = { same: '与站点进程同一个用户（同样需要解锁）', su: '以 su 提权（需要解锁）' };
@@ -52,10 +52,10 @@ function StatusCard({ binding }) {
   return (
     <section>
       <SectionTitle>绑定状态</SectionTitle>
-      <div className="mx-4 overflow-hidden rounded-lg border border-border">
+      <GroupCard className="mx-4">
         <FieldRow label="状态"><Badge variant={variant}>{label}</Badge></FieldRow>
         {bindRows(binding).map(([k, v]) => <InfoRow key={k} label={k} value={v} />)}
-      </div>
+      </GroupCard>
     </section>
   );
 }

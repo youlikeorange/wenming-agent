@@ -11,7 +11,7 @@
  *    · 退出/换账号时清空待写队列，否则 A 的数据会被写进 B 的账号（旧实现真踩过）。
  */
 import { EP } from './endpoints.js';
-import { get, post, request, ApiError } from './http.js';
+import { get, request, ApiError } from './http.js';
 
 const SETTINGS_DEBOUNCE = 500;
 const SESSION_DEBOUNCE = 400;
@@ -86,12 +86,6 @@ export async function pullLight() {
  *  有的话那份本地改动还没写上去，用旧快照盖回来等于把它删了）。 */
 export const pendingWrites = () => settingsWriter.hasPending() || memoryWriter.hasPending()
   || projectWriter.hasPending() || promptsWriter.hasPending() || pendingSessions.size > 0;
-
-/** 只问**项目记忆**那条链路有没有待写。面板刷新用这个而不是上面那个"全都在内"的口径：
- *  采纳服务端数据本身会顺手排一条（幂等的）回写，用宽口径会把紧接着的那次刷新自己挡住
- *  （实测：整份重拉之后项目记忆一次都没去取）。而真正怕被覆盖的是**本地刚改的项目记忆**，
- *  那正好由这一条回答。 */
-export const hasPendingProjectWrites = () => projectWriter.hasPending();
 
 /** 重新探一次登录态与绑定状态（登录/解绑后调用） */
 export async function refreshInfo() {
@@ -196,13 +190,14 @@ async function flushSession(id) {
    界面上"删除"已改成归档（archiveSession），批量导入也没了入口——两者全项目零调用，审计时删除。
    服务端端点仍在（/agent/store/sessions 的批量形态、/session/delete），要用时照 send() 的写法加一个即可。 */
 
-/** 归档一个会话（搬进归档区，可恢复）。**先取消它在途的落盘**：否则排队中的写入会把它又写回列表。 */
+/** 归档一个会话（搬进归档区，可恢复）。**先取消它在途的落盘**：否则排队中的写入会把它又写回列表。
+ *  **失败抛错不吞**（2026-10-07 审计）：旧实现任何失败都返回 null，调用方又没接——
+ *  服务端归档失败时用户仍看到「已归档」的成功提示。是否已登录由 send() 自己把门。 */
 export async function archiveSession(id) {
   pendingSessions.delete(id);
   sessRetries.delete(id);
   clearTimeout(sessTimers.get(id)); sessTimers.delete(id);
-  if (!user) return null;
-  try { return await send(EP.sessionArchive, { id }); } catch { return null; }
+  return send(EP.sessionArchive, { id });
 }
 
 /* ============================ 全局记忆 / 项目记忆 / 提示词登记表 ============================ */
@@ -276,7 +271,7 @@ export const Store = {
   queueSettings,
   queueSession, archiveSession, hasPendingSession,
   queueMemory, queueProjectMemory, setProjectId, queuePrompts,
-  flush, flushProjectMemory, pendingWrites, hasPendingProjectWrites,
+  flush, flushProjectMemory, pendingWrites,
   get user() { return user; },
   get info() { return info; },
   get binding() { return (info && info.binding) || null; },
@@ -284,4 +279,3 @@ export const Store = {
   set user(u) { if (u !== user) resetPending(); user = u; },
 };
 
-export { post };

@@ -12,7 +12,7 @@ import { FIELDS, GROUPS, PRESETS, modelKey, overriddenBy, resolve } from '../../
 import { Badge } from '../../components/ui/badge.jsx';
 import { Button } from '../../components/ui/button.jsx';
 import { FieldDesc, SectionTitle } from '../../components/ui/field.jsx';
-import { ChoiceGroup, EmptyHint, NoteBox, ParamRow } from './parts.jsx';
+import { ChoiceGroup, EmptyHint, GroupCard, NoteBox, ParamRow } from './parts.jsx';
 
 /* ============================ 作用范围 ============================ */
 
@@ -71,7 +71,7 @@ function GroupBlock({ group, values, settings, pid, model, scope }) {
           <RotateCcw />重置本节
         </Button>
       </div>
-      <div className="overflow-hidden rounded-lg border border-border">
+      <GroupCard>
         {entries.map(([key, field]) => (
           <ParamRow
             key={key}
@@ -81,7 +81,7 @@ function GroupBlock({ group, values, settings, pid, model, scope }) {
             onChange={(v) => setParam(key, v, scope)}
           />
         ))}
-      </div>
+      </GroupCard>
     </section>
   );
 }

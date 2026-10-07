@@ -4,8 +4,8 @@
 //  敲错一个字符就得到一个"看起来对、其实不可用"的项目。所以给一个浏览器：只能在你允许的范围里点，
 //  选到的路径一定是可用的（服务端每一层都重新校验一次，前端不自己判）。
 import { useCallback, useEffect, useState } from 'react';
-import { ChevronRight, CornerLeftUp, Folder, FolderCheck, Home, Loader2 } from 'lucide-react';
-import { browseDir } from '../state/projects.js';
+import { ChevronRight, CornerLeftUp, Folder, FolderCheck, FolderPlus, Home, Loader2 } from 'lucide-react';
+import { browseDir, makeDir } from '../state/projects.js';
 import { shortPath } from '../lib/format.js';
 import { cn } from '../lib/utils.js';
 import { Button } from '../components/ui/button.jsx';
@@ -20,6 +20,8 @@ export default function DirectoryPicker({ open, onOpenChange, onPick, title = '�
   const [path, setPath] = useState('');
   const [loading, setLoading] = useState(false);
   const [manual, setManual] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
   const start = (data && data.start) || '';
 
   const go = useCallback(async (p) => {
@@ -44,6 +46,20 @@ export default function DirectoryPicker({ open, onOpenChange, onPick, title = '�
     onOpenChange(false);
   };
 
+  /* 新建文件夹：建在当前浏览的目录里，建完直接走进去（"选这个目录"一步之遥） */
+  const confirmCreate = async () => {
+    const name = newName.trim();
+    if (!name) { toast('先填个目录名', 'err'); return; }
+    try {
+      const p = await makeDir(path || start, name);
+      setCreating(false);
+      setNewName('');
+      go(p);
+    } catch (e) {
+      toast('建目录失败：' + (e.message || e), 'err');
+    }
+  };
+
   const entries = (data && data.entries) || [];
   const atStart = !!(data && data.atStart);
 
@@ -53,7 +69,7 @@ export default function DirectoryPicker({ open, onOpenChange, onPick, title = '�
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
-            {hint || '从「起点」开始逐级进入，选中一个目录作为项目根目录；选定后会为它生成一份项目记忆文件夹。'}
+            {hint || '从「起点」开始逐级进入，选中一个目录作为项目根目录；也可以就地新建文件夹。选定后会为它生成一份项目记忆文件夹。'}
           </DialogDescription>
         </DialogHeader>
 
@@ -66,11 +82,27 @@ export default function DirectoryPicker({ open, onOpenChange, onPick, title = '�
               onClick={() => go(data.parent)} title={atStart ? '已经在起点（起点之上不浏览）' : '上一级'}>
               <CornerLeftUp />上一级
             </Button>
+            <Button size="sm" variant="outline" disabled={!data || loading} onClick={() => { setNewName(''); setCreating(true); }}
+              title={`在「${shortPath(path || start) || '起点'}」里新建文件夹`}>
+              <FolderPlus />新建文件夹
+            </Button>
             <ImeInput value={manual} onChange={(e) => setManual(e.target.value)} className="h-8 flex-1 font-mono text-xs"
               placeholder="绝对路径（必须在起点内）"
               onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); go(manual.trim()); } }} />
             <Button size="sm" variant="ghost" disabled={loading} onClick={() => go(manual.trim())}>前往</Button>
           </div>
+
+          {creating && (
+            <div className="flex items-center gap-2 rounded-md border border-primary/40 bg-primary/5 px-2 py-1.5">
+              <FolderPlus className="size-3.5 shrink-0 text-primary" />
+              <ImeInput autoFocus value={newName} onChange={(e) => setNewName(e.target.value)}
+                className="h-7 flex-1 bg-transparent text-xs"
+                placeholder={`在 ${shortPath(path || start) || '起点'} 下新建，回车确认`}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); confirmCreate(); } }} />
+              <Button size="sm" disabled={!newName.trim()} onClick={confirmCreate}>创建</Button>
+              <Button size="sm" variant="ghost" onClick={() => setCreating(false)}>取消</Button>
+            </div>
+          )}
 
           <div className="flex min-h-[16rem] flex-col rounded-md border border-border">
             <div className="flex items-center gap-1.5 border-b border-border bg-muted/30 px-3 py-1.5 text-[11px] text-subtle">

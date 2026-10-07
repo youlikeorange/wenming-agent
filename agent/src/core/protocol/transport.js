@@ -43,7 +43,28 @@ export function refOf(cfg, opts = {}) {
 
 /** 首字节超时：上游"接上了但永不响应"时请求会一直挂着，读取阶段的看门狗（sse.js 的
  *  IDLE_TIMEOUT_MS）根本没机会跑。只守"建连 + 首响应头"，之后由空闲看门狗接管。 */
-export const FIRST_BYTE_TIMEOUT_MS = 90000;
+const FIRST_BYTE_TIMEOUT_MS = 90000;
+
+/** 工具定义的口径兼容（两个协议适配器共用一份，警告也只写这一处）：
+ *  宿主既可能放在 opts.tools（旧口径：opts 里参数与工具混装），也可能放进 params.tools。
+ *  漏掉的后果很严重——模型收不到工具清单，会把调用**写成正文**
+ *  （实测：正文里出现 <tool_call><function=read_file>… 的 XML，而界面上没有任何工具卡片）。 */
+export function resolveTools(params, opts) {
+  return (opts && opts.tools) || (params && params.tools) || [];
+}
+
+/** 上游非 2xx：状态码 + 正文摘要（两个协议适配器共用一份口径）。
+ *  **必须报出来**：不查 r.ok 的话，错误响应被当成"空流"，整轮看起来像模型没说话。
+ *  这里是**失败响应**，没有 SSE 流要留给下游解析，把 body 读掉是安全的。
+ *  @param {Response} r 失败响应
+ *  @param {(txt:string)=>string} pickMessage 各家报错正文的抽取器——openai 认
+ *    error.message/error.type/message/detail，anthropic 认 error.message/message（细节见各自文件）。 */
+export async function errorText(r, pickMessage) {
+  const head = 'HTTP ' + r.status;
+  let txt = '';
+  try { txt = String(await r.text()).slice(0, 800); } catch { return head; }
+  return txt.trim() ? head + '：' + pickMessage(txt) : head;
+}
 
 /** 统一的分类在 core/http.js（needLogin / kicked / upstream / 状态码，从响应头与响应体判）；
  *  这里只补一句人话——**仅当拿到的是一句光秃秃的 HTTP 状态码**时（有错误正文时，

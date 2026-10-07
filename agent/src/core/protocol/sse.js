@@ -7,12 +7,14 @@
  *      把一条 JSON 拆成多个 data: 行（SSE 拼接语义）、用 \r\n 结尾（尾部的 \r 让 JSON.parse 失败）；
  *   ② 上游压根不用空行分隔事件（不合规范但确实存在）→ 退化成按行处理，流式不中断；
  *   ③ 上游没以空行结尾时，缓冲区里剩下的最后一帧常常正是带 stop_reason 的那一帧，必须吐出来。
+ *  sseLines（OpenAI 风格）与 sseEvents（Anthropic 风格）共用同一副取帧骨架 sseBlocks()，
+ *  三条兜底只写这一份（2026-10-06 审计：原先 sseEvents 没有兜底②，风险见该函数注释）。
  */
 
 /** 空闲看门狗：流式连接长时间没有数据就中断（上游卡死时界面不会永远停在"生成中"） */
-export const IDLE_TIMEOUT_MS = 120000;
+const IDLE_TIMEOUT_MS = 120000;
 
-export async function readChunk(reader, idleMs = IDLE_TIMEOUT_MS) {
+async function readChunk(reader, idleMs = IDLE_TIMEOUT_MS) {
   let timer = null;
   const idle = new Promise((_, reject) => {
     timer = setTimeout(() => reject(new Error(`上游 ${Math.round(idleMs / 1000)} 秒没有返回数据，已中断（可点「停止」后重试）`)), idleMs);
@@ -29,7 +31,7 @@ export async function readChunk(reader, idleMs = IDLE_TIMEOUT_MS) {
    本文件从此只做"字节 → SSE 事件"，不认识 http。 */
 
 /** 把缓冲区切出完整的 SSE 事件块（块之间以空行分隔；兼容 \r\n\r\n） */
-export function takeSseBlocks(buf) {
+function takeSseBlocks(buf) {
   const blocks = [];
   const re = /\r?\n\r?\n/;
   let m;
@@ -41,7 +43,7 @@ export function takeSseBlocks(buf) {
 }
 
 /** 从事件块里取 data（SSE 规范：多个 data: 行以 \n 拼接，且只去掉一个前导空格） */
-export function blockData(block) {
+function blockData(block) {
   let data = '';
   for (const raw of String(block).split('\n')) {
     const line = raw.replace(/\r$/, '');
@@ -51,14 +53,14 @@ export function blockData(block) {
   return data;
 }
 
-/** 逐条 data 载荷（OpenAI 风格：每块一个 JSON，[DONE] 结束）
- *  @param {{sawDone?: boolean}} [meta] 结束时回填"这条流见过 `[DONE]` 吗"——
- *         协议适配器据此判断上游是**正常收尾**还是**半路被掐断**（2026-10-03 加）。 */
-export async function* sseLines(res, meta) {
+/** 两套 SSE 读取**共用**的取帧骨架：把响应流切成"事件块"逐块吐出。
+ *  三条实测兜底都在这里：① 空行分帧兼容 \r\n；② 上游不用空行分隔 → 退化按行（流式不中断）；
+ *  ③ 流末尾剩下的最后一帧照样吐（常常正是带 stop_reason 的那一帧）。
+ *  消费方 return / 抛错时，finally 会 cancel 读端（空闲超时 / 用户停止时尤其重要：不 cancel 连接一直挂着）。 */
+async function* sseBlocks(res) {
   const reader = res.body.getReader();
   const dec = new TextDecoder();
   let buf = '';
-  const markDone = () => { if (meta) meta.sawDone = true; };
   try {
     for (;;) {
       const { done, value } = await readChunk(reader);
@@ -67,39 +69,38 @@ export async function* sseLines(res, meta) {
       const [blocks, rest] = takeSseBlocks(buf);
       const hadBlock = blocks.length > 0;
       buf = rest;
-      for (const block of blocks) {
-        const d = blockData(block);
-        if (!d) continue;
-        if (d.trim() === '[DONE]') { markDone(); return; }
-        yield d;
-      }
+      for (const block of blocks) yield block;
       if (!hadBlock && buf.includes('\n')) {
-        // 兜底：上游不用空行分隔事件。退化成按行处理，流式不中断。
+        // 兜底②：上游不用空行分隔事件。退化成按行处理，流式不中断。
         const parts = buf.split('\n');
         buf = parts.pop();
-        for (const raw of parts) {
-          const d = blockData(raw);
-          if (!d) continue;
-          if (d.trim() === '[DONE]') { markDone(); return; }
-          yield d;
-        }
+        for (const raw of parts) yield raw;
       }
     }
-    // 收尾：剩下的最后一帧照样吐出来（常常正是带 stop_reason 的那一帧）
-    const d = blockData(buf);
-    if (d && d.trim() !== '[DONE]') yield d;
-    else if (d.trim() === '[DONE]') markDone();
+    // 兜底③：收尾——剩下的最后一帧照样吐出来
+    if (buf.trim()) yield buf;
   } finally {
-    // 退出时释放读端（空闲超时 / 用户停止时尤其重要：不 cancel 连接一直挂着）
     try { reader.cancel().catch(() => {}); } catch { /* 已断开 */ }
   }
 }
 
-/** 带事件名的 SSE（Anthropic 风格：event: xxx + data: {...}） */
+/** 逐条 data 载荷（OpenAI 风格：每块一个 JSON，[DONE] 结束）
+ *  @param {{sawDone?: boolean}} [meta] 结束时回填"这条流见过 `[DONE]` 吗"——
+ *         协议适配器据此判断上游是**正常收尾**还是**半路被掐断**（2026-10-03 加）。 */
+export async function* sseLines(res, meta) {
+  const markDone = () => { if (meta) meta.sawDone = true; };
+  for await (const block of sseBlocks(res)) {
+    const d = blockData(block);
+    if (!d) continue;
+    if (d.trim() === '[DONE]') { markDone(); return; }
+    yield d;
+  }
+}
+
+/** 带事件名的 SSE（Anthropic 风格：event: xxx + data: {...}）。
+ *  与 sseLines 共用骨架（2026-10-06 审计：旧实现缺兜底②——Anthropic 风格上游若不按空行分帧，
+ *  整条流会被攒成一个 data 串、JSON.parse 全失败、整轮事件静默丢）。 */
 export async function* sseEvents(res) {
-  const reader = res.body.getReader();
-  const dec = new TextDecoder();
-  let buf = '';
   const parse = (block) => {
     let event = '';
     for (const raw of String(block).split('\n')) {
@@ -108,24 +109,9 @@ export async function* sseEvents(res) {
     }
     return { event, data: blockData(block) };
   };
-  try {
-    for (;;) {
-      const { done, value } = await readChunk(reader);
-      if (done) break;
-      buf += dec.decode(value, { stream: true });
-      const [blocks, rest] = takeSseBlocks(buf);
-      buf = rest;
-      for (const block of blocks) {
-        const ev = parse(block);
-        if (ev.data) yield ev;
-      }
-    }
-    if (buf.trim()) {
-      const ev = parse(buf);
-      if (ev.data) yield ev;
-    }
-  } finally {
-    try { reader.cancel().catch(() => {}); } catch { /* 已断开 */ }
+  for await (const block of sseBlocks(res)) {
+    const ev = parse(block);
+    if (ev.data) yield ev;
   }
 }
 

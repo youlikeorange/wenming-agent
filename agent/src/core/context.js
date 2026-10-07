@@ -103,7 +103,9 @@ export function createAgentContext() {
   }
 
   /** 上下文上限：优先用宿主注入的 numCtx()（服务商配置里的 ctxLimit），否则按远程 API 的常见量级（128K）。
-   *  注：原先有一条"本机模型（ollama）读 num_ctx"的分支，随本机模型支持一并移除。 */
+   *  注：原先有一条"本机模型（ollama）读 num_ctx"的分支，随本机模型支持一并移除。
+   *  兜底刻意**不**用 params.js 的 FIELDS.ctxLimit.def（100 万）：那是"用户没改过"的用量环分母，
+   *  拿它当压缩线的话，未配置的用户永远触发不了自动压缩，撞墙才知道。两个默认值语义不同，别合并。 */
   function ctxLimit() {
     const n = typeof numCtx === 'function' ? Number(numCtx()) : 0;
     if (n > 0) return n;
@@ -188,6 +190,8 @@ export function createAgentContext() {
   /* ======================= 压缩（Pi 的 compaction） ======================= */
   const COMPACT_AT = 0.8;        // 用量超过上限的 80% 触发
   const COMPACT_KEEP = 0.45;     // 压缩后保留最近 45% 的消息
+  /** 压缩后"最近保留几条"（两处共用同一算式：至多保留 4 条、按比例向上取整） */
+  const keepCount = (total) => Math.max(4, Math.ceil(total * COMPACT_KEEP));
   let compacting = false;
 
   /* 追踪条的安全包装：宿主可能没接界面（Node 单测、独立运行），此时 addTraceStrip 缺席或抛错。
@@ -296,7 +300,7 @@ export function createAgentContext() {
     }
 
     const hasSummary = !!(body[0] && body[0].__compaction);
-    const keep = Math.max(4, Math.ceil(body.length * COMPACT_KEEP));
+    const keep = keepCount(body.length);
     const oldSlice = body.slice(0, Math.max(0, body.length - keep));
     if (oldSlice.length < 2) return messages;            // 太短，压了没意义
     if (compacting) return messages;                     // 防重入
@@ -337,7 +341,7 @@ export function createAgentContext() {
     if (compacting) return toast('正在压缩中，请稍候');     // 运行中的自动压缩可能同时在跑
     compacting = true;
     const len0 = hist0.length;                 // 数值快照：history() 返回的是引用，splice 后两者同变
-    const keep = Math.max(4, Math.ceil(hist0.length * COMPACT_KEEP));
+    const keep = keepCount(hist0.length);
     const oldSlice = hist0.slice(0, Math.max(0, hist0.length - keep)).map(toApiMsg);
     const el = beginTrace('手动压缩：正在生成摘要…');
     try {
@@ -370,11 +374,13 @@ export function createAgentContext() {
     if (sess && sess.compaction) { delete sess.compaction; compactCache = null; }
   }
 
+  /* 导出面只留有消费方的：trimForRequest 由 transformMessages 包着用（对外唯一入口），
+     COMPACT_KEEP / CTX_KEEP_TAIL 是内部阈值——原先三个都挂出去但全仓无人读（2026-10-06 审计）。 */
   return {
     init, estTokens, ctxLimit, ctxUsage,
     autoCompactOn, compactMessages, transformMessages, compactNow, uncompact, invalidateCompaction,
-    compactHeader, trimForRequest,
-    COMPACT_AT, COMPACT_KEEP, CTX_TRIM_AT, CTX_KEEP_TAIL,
+    compactHeader,
+    COMPACT_AT,
   };
 }
 

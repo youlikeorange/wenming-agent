@@ -12,7 +12,7 @@ import { fileKind } from '../lib/filekind.js';
 import { fmtBytes, fmtCount } from '../lib/format.js';
 
 /* 判据全是结构化字段（state/kind），不再比对中文文案——旧会话数据由 ui/lib/trace.js
-   的 normalizeTrace/traceRunning 按当时的文案回推一次（那一处兼容逻辑在纯函数里有单测）。 */
+   的 traceRunning 按当时的文案回推一次（那一处兼容逻辑在纯函数里有单测）。 */
 const isRunning = traceRunning;
 const isSteer = (t) => traceKind(t) === 'steer';
 const isSub = (t) => traceKind(t) === 'sub';
@@ -42,6 +42,12 @@ function metaText(t, running, failed) {
     t.ms != null ? `${t.ms}ms` : '',
     c.truncated ? `${fmtCount(c.shown)}/${fmtCount(c.total)} 字` : (c.shown ? `${fmtCount(c.shown)} 字` : ''),
   ].filter(Boolean).join(' · ');
+}
+
+/** 字数后缀（RecordList 与 metaText 同一口径；截断时写成"显示了/一共 字"） */
+function charsSuffix(t) {
+  const c = charsOf(t);
+  return c.truncated ? ` · ${fmtCount(c.shown)}/${fmtCount(c.total)} 字` : (c.shown ? ` · ${fmtCount(c.shown)} 字` : '');
 }
 
 /** 标题前缀（插话与子智能体各有一个小标记，类型一目了然） */
@@ -250,10 +256,7 @@ function RecordList({ rec }) {
       {rec.error ? <p className="text-destructive">失败：{rec.error}</p> : null}
       {steps.map((x, i) => (
         <div key={i} className="rounded border border-border/60 p-1.5">
-          <p className="text-subtle">{x.label || x.name}{x.ms ? ` · ${x.ms}ms` : ''}{x.ok === false ? ' · 失败' : ''}{(() => {
-            const c = charsOf(x);
-            return c.truncated ? ` · ${fmtCount(c.shown)}/${fmtCount(c.total)} 字` : (c.shown ? ` · ${fmtCount(c.shown)} 字` : '');
-          })()}</p>
+          <p className="text-subtle">{x.label || x.name}{x.ms ? ` · ${x.ms}ms` : ''}{x.ok === false ? ' · 失败' : ''}{charsSuffix(x)}</p>
           {x.args ? <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(x.args, null, 2)}</pre> : null}
           {x.result ? <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words">{x.result}</pre> : null}
         </div>

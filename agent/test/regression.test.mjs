@@ -230,10 +230,15 @@ test('C6 契约：确认框的 remember 必须有消费点（exec_allow / skill_
 
 test('C6 行为：技能确认开关在"完全访问"档下不再打断（skillAsk 有消费点）', () => {
   const tr = read('core/tool-runner.js');
-  // skill_write 的确认必须包在 skillAsk() 判断里
-  const i = tr.indexOf("name === 'skill_write'");
+  // skill_write 走共同的 confirmSkillGate 闸门（2026-10-06 收敛：write/delete/import 三处同构），
+  // 闸门内部必须包在 skillAsk() 判断里——删掉这道判断 = "完全访问"档重新被打断。
+  const i = tr.indexOf('async function confirmSkillGate');
+  assert.ok(i > 0, 'confirmSkillGate 闸门存在');
   const seg = tr.slice(i, i + 700);
   assert.match(seg, /if \(skillAsk\(\)\)/, '★ 技能写入的确认要受 skillAsk 控制（原先无条件弹窗）');
+  const j = tr.indexOf("name === 'skill_write'");
+  const seg2 = tr.slice(j, j + 700);
+  assert.match(seg2, /confirmSkillGate\(/, '★ skill_write 必须经共同闸门（不许绕开自己弹窗）');
 });
 
 test('C5 行为：Anthropic 开思考时 max_tokens 必须大于 budget_tokens（否则整轮 400）', async () => {

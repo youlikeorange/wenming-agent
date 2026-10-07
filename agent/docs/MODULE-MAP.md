@@ -7,6 +7,7 @@
 - `../ARCHITECTURE.md` —— 启动顺序与"一条消息从输入框到落盘"的完整流程（**先读那份理解流程**，这份是查字典的）
 - `../README.md` —— 怎么构建、怎么跑测试
 - `../AUDIT.md` —— 历轮审计与修复记录
+- `INVENTORY.md` —— **函数与数据全量清单**（109 文件 / 1097 函数逐个列位置与作用；每个磁盘数据文件的生成/消费/清理函数链。函数区由 `npm run inventory` 重生成）
 - 仓库根 `PROJECT-STRUCTURE.md` —— 整个文档站（非 agent 部分）
 - 站点根 `lib/agent/AUDIT-2026-09-30-INDUSTRIAL.md` —— 服务端安全审计
 
@@ -39,7 +40,7 @@
 | `agent/src/ui/` | React 界面：`features/`（组件）、`state/`（状态容器 + 动作层）、`components/ui/`（shadcn 风基础件） |
 | `agent/src/ui/state/` | `store.js` 状态容器 · `host.js` 依赖注入宿主 · `session.js` 一轮对话编排 · `run.js` 托管运行客户端 · `settings.js` 设置类动作 · `projects.js` 项目动作 · `downloads.js` 待下载 |
 | `lib/agent/` | 服务端（站点根）：路由 `index.js`、存储 `store.js`、配置 `settings.js`、托管运行 `run*.js`、工具 `tools/` |
-| `agent/test/` | `node --test` 用例；改 core 必跑 |
+| `agent/test/` | `node --test` 用例；改 core 必跑（2026-10-06 起 263 个，其中含"登记表完整性"守门） |
 | `agent/build.mjs` | esbuild + Tailwind CLI → `public/llm-chat/vendor/{agent.js,agent.css}` |
 
 ---
@@ -99,6 +100,7 @@
 | POST | `/agent/binding/unlock` | 内存解锁（默认 12h TTL） | `{password}` | `{ok,unlock,binding}` | `session.js:207-231` |
 | POST | `/agent/binding/lock` | 丢弃解锁凭据 | — | `{ok,binding}` | `session.js` |
 | GET | `/agent/projects/browse` | 列子目录（只能在"起点"内向下） | `?path=` | `{path,parent,start,entries[],atStart}` | `projects.js:416-441` |
+| POST | `/agent/projects/mkdir` | **新建文件夹**（选择器里就地建目录；与 browse 同一道闸：绑定 + 可访问目录 + 起点，重名 409、非法名 400） | `{parent?,name}`（parent 空 = 起点根） | `{ok,path}` | `projects.js` 的 `mkdir` |
 | GET | `/agent/projects/memory` | 读某项目记忆（**唯一取数路径**） | `?id=` | `{ok,id,entries[]}` | `index.js:224-228` |
 | POST | `/agent/projects/create` | 建项目 + 记忆文件夹 + 种子记忆 | `{root,name}` | `{ok,project,current,entries}` | `projects.js:317-353` |
 | POST | `/agent/projects/rename` / `current` / `delete` / `archive` / `memory` | 改名 / 设当前 / 删 / 归档（连会话）/ 项目记忆整体覆盖 | `{id,…}`；memory 另带 `baseCount`（取回时的条数） | `{ok,…}`；空列表 + 基准对不上 → **409 `{conflict:true,entries}`** | `index.js:240-278` · `projects.js:226-260` |
@@ -113,7 +115,7 @@
 | POST | `/agent/files/delete` | 删除待下载文件 | `{name}` | `{ok}` | `files.js:279-286` |
 | GET | `/agent/tools/status` | 身份/白名单/上限/危险清单/工具表 | — | `{binding,roots,start,limits,deny[],tools[]}` | `tools/index.js:47-76` |
 | POST | `/agent/tools/roots` | 可访问目录 / 项目起点 | `{action:'add'\|'remove'\|'set'\|'reset'\|'start',…}` | `{ok,roots[]}` / `{ok,start}` | `tools/index.js:78-92` |
-| POST | `/agent/tools/deny-check` | 危险命令预检（内置清单含**站点自保**：kill/pkill/killall、loginctl 会话、systemctl 破坏性子命令、受保护路径上的删除/移动/截断/重定向；受保护范围见 `lib/agent/deny.js` 的 `SELF_PROTECT`，可用 `AGENT_PROTECT` 追加） | `{command}` | `{ok,hit,grant}` | `tools/index.js:94-104` |
+| POST | `/agent/tools/deny-check` | 危险命令预检（内置清单含**站点自保**：kill/pkill/killall、loginctl 会话、systemctl 破坏性子命令、受保护路径上的删除/移动/截断/重定向；受保护范围见 `lib/agent/deny.js` 的 `SELF_PROTECT`，可用 `AGENT_PROTECT` 追加）。**豁免（2026-10-07）**：命中仅限 kill 族、且目标全是 agent 自启进程（`lib/agent/proctree.js` 的 `killExempt`：祖先链到站点进程〔启动时 prctl 标记 subreaper，setsid 孤儿归养回来永远可查〕/ 子树采样 / 进程组兜底）→ `hit` 置空、不发票据，客户端不弹授权窗；目标里混进任何别的进程（含站点自己）照旧要票 | `{command}` | `{ok,hit,grant}` | `tools/index.js` deny-check 分支 · `run-bridge.js` 同款 · 执行时 `tools/exec.js` 再兜一次底 |
 | POST | `/agent/tools/call` | 执行工具（**唯一工具出口**） | `{name,args,limits,grant}` | `{ok,text,note,ms,files?}`；失败带 `needBind/needUnlock/needGrant/needPermission/hit` | `tools/index.js:106-145` |
 | POST | `/agent/run/start` | 起一段托管运行（立即返回） | `{sessionId,text,providerId?,history?,localEdits?}` | `{ok,runId}`；忙时 409 + `busy[]` | `run-http.js:65-82` · `run.js:75-125` |
 | GET | `/agent/run/hub` | **前端唯一 SSE 口**：本账号全部运行事件 | — | SSE：`hub_snapshot`、带 `runId/sessionId` 的事件、`confirm` | `run-events.js:41-70` |
@@ -172,7 +174,10 @@ STATE_DIR/
 
 ### 5.1 数据与两端的角色
 
-- **core（`agent/src/core/prompts.js`）是登记表的唯一真源**：`DEFAULTS` 是内置默认（全部可见可改），
+- **core（`agent/src/core/prompts.js`）是登记表的唯一真源**：`DEFAULTS` 是内置默认（全部可见可改，
+  2026-10-06 审计后 85+ 条；菜单六组全覆盖，schema/helper 条目也渲染、也可改——
+  agent-defs 引用过的"幽灵 id"（memory_write/spawn_agent 的 schema 描述缺失 = 空描述注册给模型）
+  已补齐，守门用例在 `test/params.test.mjs`「登记表完整性」），
   用户改动分三处存：
   - `overrides`：`id → {text?, enabled?}`，内置条目的覆盖（如 `system.base`、内置技能 `skill.web_search`）；
   - `skills[]`：**用户/模型建的技能**（`{id,name,description,text,enabled,auto}`；
@@ -220,7 +225,7 @@ STATE_DIR/
 | 条目 kind | 注入方式 |
 |---|---|
 | `system` | 正文按组顺序拼进 system 消息 |
-| `tool` | 工具使用说明（`工具说明 · <名>`） |
+| `tool` | 工具使用说明（`工具说明 · <名>`）。**跟着各自的开关走**（2026-10-06 起，assemble.js 的 promptBlocks 闸）：plugin.*.usage 跟插件开关 + 工具可用性、memory_write 跟 `tool_mem_on`、技能四条跟 `skill_tools_on`、spawn_agent 跟 `subagent_on`——关掉 = 连工具带说明都不注入 |
 | `skill` 且 `auto:false`（常驻技能） | 按 agentskills.io 规范包成 `<skill name="…" description="…">正文</skill>`（`skillTag`，:451） |
 | `skill` 且 `auto:true`（按需技能） | **不注入正文**；只在 system 末尾列清单（`skillIndexBlock`，:462；`- 名字：用途`），模型用 `use_skill` 取正文 |
 | `schema` | 只作工具定义里的 description，不单独注入 |
@@ -324,6 +329,9 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 
 | 想做的事 | 前端 | core | 服务端 | 还要注意 |
 |---|---|---|---|---|
+| 改**token 统计口径**（实时条/收尾条 = 本轮累计） | `Message.jsx` 的 `liveUsage`/`Meta`（只管显示，数值是内核合并好的）、`ui/lib/format.js` 的 `statsParts`（tok/s = 累计输出/累计 gen_ms） | `core/agent.js` 的 `usageAcc`（run 级累计器）+ `addUsage`/`withLiveTotals`/`bankUsage`/`totalsStats`：stats 事件与收尾 `out.stats` 都是"各次调用注入/输出合计"（2026-10-07 用户定的口径）；被中断/重调的尝试不计入（`acc.round` 每次尝试清零） | `run-loop.js` 的 `onStats`/`finish` 原样转发合并值，无需改 | 旧口径（只显示最后一轮）消费点只剩 `roundShapes` 日志；上游不回 usage 时 UI 仍按字数估算（≈ 前缀） |
+| 改**单次调用超时 / 思考循环检测** | 面板「生成控制」`call_timeout_sec`；追踪条上的中断提示（loop 文案 `loop.call_timeout`/`loop.think_loop`） | `core/agent.js`：`readRound` 的子 controller + `streamHandlers`（表格驱动）+ `readRoundRetry` 的 `handleSoftRetry`；`core/thinkloop.js`（检测判据） | `limits.capCallTimeout`（硬顶 `AGENT_LLM_CALL_MAX_SEC`）、`run-loop.js`/`run-subagent.js` 接线；`run-events.js` 的 `applyToLive` 认 `live_reset` | 新增 loop 文案要先登 `LOOP_TEXT_IDS`（`prompts.js`）；**isAbort 认得一切 AbortError**——保护性中断必须先查自己的 `softRetry` 标志，否则会被当成"用户停止"静默吞掉 |
+| 改**危险命令授权**（票据 / kill 族"自启进程免授权"） | — | `core/tool-runner.js` 的 denyCheck（预检 + 弹窗编排） | 清单在 `lib/agent/deny.js`（`PROC_PROGS`/`SELF_PROTECT`）、票据 `grants.js`、豁免判定 `lib/agent/proctree.js`（`killExempt`：目标解析是保守超集，看不懂一律要票）；三处消费：`tools/index.js` 与 `run-bridge.js` 的 deny-check、`tools/exec.js` 执行闸门 | 豁免的方向是"宁可误拦"：子壳/多命令/正则元字符/零命中/查不到的目标全不放；subreaper 插件（`proctree-subreaper.c`，gcc 现编缓存在 `os.tmpdir()/agent-proctree/`，`AGENT_PROC_SUBREAPER=0` 可关）不可用时 setsid 孤儿查不到 → 那类 kill 回到要票；僵尸清扫只收"非 libuv 管"的，抢收会把退出码弄成 null |
 | 加一条**内置提示词**（可改可关） | — | `core/prompts.js` 的 `DEFAULTS` | 不用改（净化是白名单式，不枚举 id） | 组/kind 决定注入位置；`systemBlocks` 认的 kind 见 §5.3 |
 | 改某个工具的**说明文案** | — | `core/prompts.js` 对应条目 | — | 工具 schema 描述也是条目（`kind:'schema'`） |
 | 加一个**工具** | 设置里给开关？ | `core/agent-defs.js`（定义与注册闸门）+ `core/tool-runner.js`（执行） | `lib/agent/tools/index.js` 分发表 + `tools/*.js` | 三处都要改：定义、执行、服务端实现；权限走 `roots + osaccess + limits` |
@@ -335,7 +343,7 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 | 改**改动行数 / 一键撤销** | `TraceStrip.jsx` 的 `DiffChip`（在折叠组里，展开后才露出来）、`Message.jsx` 的 `RunFooter`/`confirmUndo`、`ui/state/run.js` 的 `fillToolEnd`/`undoRun` | `core/agent.js` 的 `asResult`/`asLines`（trace 也带 `lines`）、`core/tool-runner.js`（**别漏这一层**：它转发 `lines`/`files`） | `undo.js`（日志/快照/恢复）、`tools/index.js` 的 `callTool`（唯一执行入口，包 `undo.wrap`）、`run-bridge.js`（带 `run` 上下文）、`run-loop.js` 收尾（`live.undo`）、`run-http.js` 的 `/undo`、`store.js` 白名单 | 行数/撤销摘要的字段链路有**六跳**，任何一跳漏了就是"真机看不到"（`lines` 曾在 `tool-runner.js` 被吞掉，单测抓到的）；撤销走与工具同一套闸门，没解锁时一个文件都不动且**不标已撤销**；`test/undo-ui-check.mjs` 断言行数卡片前会先展开操作组 |
 | 改**技能编辑 UI** | `PromptsSection.jsx`（② 组） | — | — | 只有这一处编辑器；写入口用 `updateSkill`（技能）或 `set`（覆盖） |
 | 改**提示词保存链路** | `ui/state/host.js`（Prompts.onChange） | `core/prompts.js`（notify/serialize） | `index.js` store 路由 + `store.putPrompts` + `sanitize.prompts` | 托管运行那条订阅（`run-loop.js:83`）要跟着改，且**必须退订** |
-| 改**用量/压缩** | `ContextMeter.jsx`、`Header.jsx`（右上角 tok/s）、`ui/state/settings.js` 的 `compactNow/uncompact` | `core/context.js`、**`core/agent.js` 的 `readRound`（`gen_ms` = 第一个增量 → 最后一个增量）** | `run-loop.js` 的 finish（`end` 事件带 `stats`） | tok/s 的分母只能是**生成耗时**：旧实现回落到整轮 wallMs（含工具执行），一轮 8 tokens 显示成 0.3 tok/s（2026-10-04 用户报的）；口径在 `ui/lib/format.js` 的 `statsParts`（gen_ms → eval_duration → 都没有就不显示） |
+| 改**用量/压缩** | `ContextMeter.jsx`、`Header.jsx`（右上角 tok/s）、`ui/state/settings.js` 的 `compactNow/uncompact` | `core/context.js`、**`core/agent.js` 的 `readRound`（`gen_ms` = 第一个增量 → 最后一个增量；stats 事件经新 `onStats` 钩子实时转发，流式中的收尾条 `Message.jsx` 的 `LiveFooter` 据此把估算换成真实 tokens）** | `run-loop.js` 的 finish（`end` 事件带 `stats`；loopHooks 的 `onStats` 把每轮真实 usage 转发成 `stats` 事件） | tok/s 的分母只能是**生成耗时**：旧实现回落到整轮 wallMs（含工具执行），一轮 8 tokens 显示成 0.3 tok/s（2026-10-04 用户报的）；口径在 `ui/lib/format.js` 的 `statsParts`（gen_ms → eval_duration → 都没有就不显示） |
 | 改**侧栏/分组** | `Sidebar.jsx`、`ui/state/session.js` | `core/sessions.js` 的 `titleFrom` | — | 会话分组是纯客户端（`settings.ui`） |
 | 改**侧栏字号**（会话名 / 项目信息） | `styles.css` 的 `.sidebar-lead`（1.07rem）/ `.sidebar-sub`（0.86rem）、`features/Sidebar.jsx`（会话条目、项目卡、项目分组头；名字上挂了 `data-side` 供检查脚本量字号） | — | — | 用户 2026-10-04 要求"比正文稍大即可"（正文 1rem）；真机回归 `../test/chat-column-ui-check.mjs` 里那三条字号断言 |
 | 改**对话列宽度 / 两边留白 / 右侧任务清单区** | `styles.css` 的 `--chat-pad`（左 10px）/ `--chat-pad-right`（窄档桌面的右 20px）/ `--todo-zone`（任务清单区 19rem）/ `.chat-col` / `.chat-gutter`（消息区与输入框**共用这一份**）/ `.todo-card`（TODO 卡片宽）、`features/ChatView.jsx`、`features/Composer.jsx`、`features/SessionOutline.jsx`（`.ol-rail`）、`features/TodoPanel.jsx` | — | — | **≥1024px**：消息区右侧留出与侧栏（`w-[19rem]`）**等宽**的清单区给右上角 TODO（`margin-right: calc(var(--chat-pad) + var(--todo-zone))`），列到两侧留白的间距都 = `--chat-pad`，TODO 卡片（`.todo-card` = 区块宽 − 24px、`right-3`）与浏览器右缘留 12px 间隔；`.ol-rail` 在该断点右移跟着列缘走。**768–1023px 窄档**放不下两根 19rem 柱子，维持旧的 10px/20px、TODO 照旧悬浮。**手机（≤767px，与 `useIsPhone` 同断点）不变**：列占满、两侧只剩沟槽。**两边各写一个宽度就会错开十几像素**（2026-10-01 的老坑）；**两个容器都要 `.chat-gutter`**（`scrollbar-gutter: stable both-edges`）；真机回归 `../test/chat-column-ui-check.mjs`（25 项：桌面等宽区/TODO 不盖消息/手机不变） |
@@ -348,7 +356,7 @@ Msg = { role:'user'|'assistant'|'system'|'tool', content(≤2MB), id?, streaming
 cd agent
 npm run build     # 改了 src/** 必做（产物 public/llm-chat/vendor/agent.js）
 npm test          # node --test，206 个用例
-npm run lint && npm run lint:budget   # warning 是棘轮：只减不增（当前 79）
+npm run lint && npm run lint:budget   # warning 是棘轮：只减不增（当前 76）
 npm run dup && npm run cycles         # 重复块 / 模块环
 npm run check     # 上述一起跑
 # 改了 lib/agent/**：bash down.sh && bash up.sh（只重建不重启 = 新客户端打旧服务端）
@@ -454,6 +462,7 @@ npm run check     # 上述一起跑
 | `subagent_steps`（子智能体）· 转录保留几步 | 200 | `run-subagent.js` 的 `transcript.steps` | 内存（run.subs，结束保留 10 分钟） |
 | `plugin_fs_read_kb` / `plugin_fs_write_kb` / `plugin_exec_out_kb` / `plugin_fs_nodes` / `plugin_exec_timeout` | 64KB / 4MB / 16KB / 800 / 60s | 客户端 `tool-runner.js` 的 `pluginLimits()` → 服务端 `limits.js` 的 `effLimits()`（**只能收紧**） | `LIMITS`（环境变量 `AGENT_READ_MAX_BYTES` / `AGENT_WRITE_MAX_BYTES` / `AGENT_OUTPUT_MAX_BYTES` / `AGENT_TREE_MAX_NODES` / `AGENT_EXEC_MAX_SEC`；面板上写明。**本站 `up.sh` 已把输出硬顶设为 512KB**——抬硬顶 ≠ 自动生效，面板值仍要自己调） |
 | `plugin_wait_sec` / `plugin_wait_max`（命令行组）· **wait 工具**（长任务"提交后台 → 等待 → 查进度"那一步，2026-10-05） | 300 秒 / 12 次 | 单次上限：`pluginLimits()`（`wait_sec`）→ `effLimits()` → `tools/wait.js`；次数：`run-loop.js` 的 `roundBudget`（**计入轮次上限**）、子智能体 `run-subagent.js` 的 `subBudget`（跟写开关：允许写默认 4、只读 0）；提示词政策在 `plugin.exec.usage` 的 ② 等待 | `LIMITS.waitSec`（环境变量 `AGENT_WAIT_MAX_SEC`，默认 1800 秒）；**wait 跟 `plugin_exec_on` 同一个开关**；托管运行里点「停止」立即打断等待（`wait.js` 的 `delay` 监听 `run.abort`）；相同参数连等不触发重复保护（`agent.js` 的 `REPEAT_OK`） |
+| `call_timeout_sec`（生成控制组）· **单次调用最高时长 + 思考循环检测**（2026-10-07） | 600 秒（0=不限） | 面板值 `Params.callTimeoutOf(params)` → `limits.capCallTimeout()` 钳硬顶 → `Agent.run` 的 `cfg.callTimeoutSec`；内核 `readRound` 用**子 AbortController** 计时（用户停止走父信号，互不混淆）；超时/循环检出 → `softRetry` 错误 → `handleSoftRetry` **立即重调**（最多 2 次，最后一次放开循环检测；到上限如实报错，绝不掉进 30 秒上游重试）。循环检测在 `core/thinkloop.js`（思考尾部 24 字×3 连排 / 8 字×6 连排 / 纯思考超 65536 字）；中断重调会发 `live_reset` 事件清掉半截正文（服务端 `run.live` 与客户端同清） | `AGENT_LLM_CALL_MAX_SEC`（默认 3600）；子智能体同享（`run-subagent.js` 同款接线） |
 | `plugin_screen_on` / `plugin_screen_max`（屏幕操作组）· **screen_* 工具**（OmniParser 看屏幕 + xdotool 键鼠，2026-10-05） | 开关默认**关** / 30 次 | 定义与注册闸门：`agent-defs.js` 的 `SCREEN_TOOL_NAMES` + `SCREEN_TOOL_SPECS()`（子智能体**一律不给**，`subBudget.maxScreen=0`）；执行：`tool-runner.js` 的 isScreen 分支（预算 `screen/maxScreen`，动作类 CONFIRM_SEQUENTIAL 串行）→ `lib/agent/tools/screen.js`（截图=ImageMagick `import`，动作=xdotool，解析=本机 HTTP 服务）→ `run-loop.js` roundBudget 的 `maxScreen`；提示词 `plugin.screen.usage`（`assemble.js` 按开关注入，与 fs/exec 同款） | 解析服务 `AGENT_OMNIPARSER_URL`（默认 `http://127.0.0.1:4183/parse`；启动 `bash ~/OmniParser/screen-service.sh start`，模型 ~1.5GB 在 `~/OmniParser/weights`，**transformers 锁 4.45.2**——4.46+/5.x 有 Florence-2 掩码 bug）；**只支持 X11**（Wayland 下 import/xdotool 不工作）；坐标是屏幕像素；截屏不落盘（用完即删），`deliver:true` 才把标注图放进待下载 |
 | `ctxLimit`（上下文与扩展）· 用量环分母 | 1000000 | `core/params.js` 的 `FIELDS.ctxLimit` → `ctxLimitOf()`（参数 > 服务商 > 出厂默认）；`ui/state/store.js` 与 `ContextMeter.jsx` 的初始占位直接读 schema | `sanitize.js` 把服务商级 ctxLimit 夹到 2^24；**只影响用量环与自动压缩阈值，不发给模型** |
 | 子智能体预算四项 + 并发/轮次 | 2/4/10/4 · 2/6 | `run-subagent.js` 的 `subBudget` / `clampInt` | 并发 8 / 轮次 30（`clampInt` 上限，schema 里已写 max） |

@@ -24,8 +24,8 @@ import { sseLines } from '../../core/protocol/sse.js';
 import { newMsgId } from '../../core/sessions.js';
 import { toast } from '../components/ui/toast.jsx';
 
-/* 生成中的重绘节流：与浏览器自己跑时同一口径（见 session.js 的 touchSoon 注释）。
-   这里不用 import session.js（会成环），就地实现一份最小的。 */
+/* 生成中的重绘节流（80ms 一帧）。原先这份在 session.js（那时循环在浏览器里跑），
+   循环搬去服务端后它跟着事件流搬到本文件——session.js 里的同名注释已成为历史。 */
 const EMIT_MS = 80;
 let lastEmit = 0;
 let emitTimer = null;
@@ -43,7 +43,11 @@ function touchSoon() {
    liveId  = **服务端那条**助手消息 id：事件按它寻址，于是"别人开的运行/刷新后接上"也能对上。 */
 const runs = new Map();
 
-export const runOf = (sessionId) => runs.get(sessionId) || null;
+/** 失败/停止时补在正文尾巴上的说明（与 lib/agent/run-loop.js 的 finish 同一句话；
+ *  那句是服务端在流结束**之后**写上的，这里只在"服务端没给最终正文"的兜底路上用） */
+const FAIL_PREFIX = '请求失败：';
+const STOP_MARKER = '*[已停止生成]*';
+
 /** 这条会话现在有在跑的运行吗（侧栏小标、归档/清空等操作的前置判断用它） */
 export const isRunning = (sessionId) => !!runs.get(sessionId) && !runs.get(sessionId).settled;
 /** 当前会话在跑的那一段（没有就是 ''） */
@@ -51,9 +55,8 @@ export const activeRunId = () => {
   const r = runs.get(state.activeSessId);
   return r && !r.settled ? r.runId : '';
 };
-/** 正在跑的会话 id 列表（侧栏与"当前项目"跟随用） */
-export const runningSessionIds = () => [...runs.values()].filter((r) => !r.settled).map((r) => r.sessionId);
-
+/* runOf / runningSessionIds 两个导出已删（2026-10-06 审计：全仓零调用，注释声称的
+   "侧栏与当前项目跟随"实际走的是 state.runs 快照）。 */
 /** 把本地记录映射进 state（UI 只读 state.runs），并同步"当前会话是否在生成" */
 function publish() {
   const obj = {};
@@ -72,7 +75,8 @@ function publish() {
 export function syncActive() {
   const rec = runs.get(state.activeSessId);
   const live = !!rec && !rec.settled;
-  patch({ streaming: live, steering: live ? (rec.steering || 0) : 0, abortSignal: null });
+  patch({ streaming: live, steering: live ? (rec.steering || 0) : 0 });
+  /* （abortSignal 字段已删：停止走服务端 POST /agent/run/stop，客户端没有可中断的本地信号） */
 }
 
 /* ============================ 消息寻址 ============================ */
@@ -177,6 +181,8 @@ function fillToolEnd(at, ev) {
     /* 可下载文件清单（deliver_file）：追踪条上的文件卡片（原先漏了这一步——
        卡片要等重拉会话才出现，直播时看不到） */
     ...(Array.isArray(ev.files) && ev.files.length ? { files: ev.files } : {}),
+    /* 任务清单（todo_write）：与服务端落盘那份同形（null = 已丢弃，字段缺席 = 与清单无关） */
+    ...(ev.todo !== undefined ? { todo: ev.todo } : {}),
   });
 }
 
@@ -198,6 +204,9 @@ const HANDLERS = {
   content: (ev, msg) => { msg.content = (msg.content || '') + ev.text; touchSoon(); },
   thinking: (ev, msg) => { msg.thinking = (msg.thinking || '') + ev.text; touchSoon(); },
   stats: (ev, msg) => { msg.stats = ev.raw; touchSoon(); },
+  /* 调用保护的中断重调（单次超时/思考循环）：把本次尝试已流出的半截清掉——
+     服务端从零重新生成，不清的话界面上新旧两份叠加成重复文本（与 run.live 同口径）。 */
+  live_reset: (ev, msg) => { msg.content = ''; msg.thinking = ''; touchSoon(); },
   notice: (ev, msg) => {
     traceArr(msg).push({ kind: 'notice', state: 'done', label: ev.text, ok: true, note: '提示' });
     touchSoon();
@@ -205,7 +214,7 @@ const HANDLERS = {
   /* 运行级错误（上游 401/429/断网…）：**在会话里看得见**——挂到消息上，界面画一条红色错误块，
      一个字都没生成时尤其重要（旧实现只有 end 事件里一句文本，容易漏看）。 */
   error: (ev, msg) => {
-    if (ev.fatal) { msg.error = '请求失败：' + (ev.text || '未知错误'); }
+    if (ev.fatal) { msg.error = FAIL_PREFIX + (ev.text || '未知错误'); }
     else traceArr(msg).push({ kind: 'notice', state: 'done', label: ev.text, ok: false, note: '错误' });
     touchSoon();
   },
@@ -260,16 +269,14 @@ const HANDLERS = {
     touchSoon();
   },
   steer_accepted: (ev, msg) => {
-    traceArr(msg).push({ kind: 'steer', state: 'done', label: `已插话（待注入）：${String(ev.text).slice(0, 60)}`, ok: true, note: '插话' });
-    /* 待注入条数**以服务端的队列为准**（服务端按 run 记数，客户端不自己数） */
-    const rec = runs.get(ev.sessionId);
-    if (rec) { rec.steering = Number(ev.pending) || 0; if (ev.sessionId === state.activeSessId) patch({ steering: rec.steering }); }
+    const brief = String(ev.text).slice(0, 60);
+    /* steerText/steerState 与服务端 markSteer 同一套结构化字段（label 只是给人看的）：
+       服务端"原地更新"按字段寻址，不再拿渲染串反查（2026-10-06 审计）。 */
+    traceArr(msg).push({ kind: 'steer', state: 'done', label: `已插话（待注入）：${brief}`, ok: true, note: '插话', steerText: brief, steerState: '待注入' });
+    syncSteering(ev.sessionId, ev.pending);
     touchSoon();
   },
-  steer_pending: (ev) => {
-    const rec = runs.get(ev.sessionId);
-    if (rec) { rec.steering = Number(ev.pending) || 0; if (ev.sessionId === state.activeSessId) patch({ steering: rec.steering }); }
-  },
+  steer_pending: (ev) => { syncSteering(ev.sessionId, ev.pending); },
   steer_leftover: (ev) => {
     /* 这一轮结束时还没注入的插话：回填输入框，绝不静默丢弃（只在**当前会话**回填——
        后台会话的插话不能跑到你现在正在写的输入框里）。 */
@@ -294,17 +301,31 @@ const HANDLERS = {
   end: (ev) => settle(ev),
 };
 
+/** 待注入条数**以服务端的队列为准**（服务端按 run 记数，客户端不自己数）——
+ *  steer_accepted / steer_pending 两个事件共用这同两行（原先逐字抄了两份） */
+function syncSteering(sessionId, pending) {
+  const rec = runs.get(sessionId);
+  if (rec) { rec.steering = Number(pending) || 0; if (sessionId === state.activeSessId) patch({ steering: rec.steering }); }
+}
+
 const sessionTitle = (id) => {
   const s = sessionById(id);
   return (s && s.title) || '另一条对话';
 };
 
+/** 三份"合并式登记"（adoptRun / mergeRun / registerRun）共用的取记录外壳。
+ *  字段保留规则三者**有意不同**（事件登记/快照合并/本窗口开跑），不强行并成一个 upsert。 */
+const getOrCreate = (sessionId) => runs.get(sessionId) || { sessionId, steering: 0 };
+
 /** 把一段运行登记进本地表（别处开的、刷新接上的、本窗口刚发的都走这里）。
- *  已有记录就只更新——**别丢掉 localId**，它要用来认领服务端那条占位消息。 */
+ *  已有记录就只更新——**别丢掉 localId**，它要用来认领服务端那条占位消息。
+ *  startedAt（服务端造运行的时间戳）给流式中的收尾条起算"本轮用时"；
+ *  没有（旧协议/回放）就落到首次登记的这一刻——晚几百毫秒可接受。 */
 function adoptRun(ev) {
-  const rec = runs.get(ev.sessionId) || { sessionId: ev.sessionId, steering: 0 };
+  const rec = getOrCreate(ev.sessionId);
   rec.runId = ev.runId || rec.runId;
   if (ev.liveId) rec.liveId = ev.liveId;
+  rec.startedAt = ev.startedAt || rec.startedAt || Date.now();
   rec.settled = false;
   runs.set(ev.sessionId, rec);
   publish();
@@ -353,8 +374,8 @@ async function askThenAnswer(ev) {
 
 /** 失败只**追加**一行说明，绝不清空已经生成的部分（那是用户等了半天的东西） */
 function noteFailure(msg, error) {
-  if (msg.content) msg.content += '\n\n*[请求失败：' + error + ']*';
-  else msg.error = '请求失败：' + error;
+  if (msg.content) msg.content += '\n\n' + FAIL_PREFIX + error + '*';
+  else msg.error = FAIL_PREFIX + error;
 }
 
 /** **以服务端那份最终正文为准**（2026-10-03）：停止/失败/被掐断时，服务端会在流结束之后
@@ -370,9 +391,9 @@ function adoptServerContent(msg, ev) {
 
 /** 服务端没给正文时的兜底：停止/失败各补一句说明（与 lib/agent/run-loop.js 的文案一致） */
 function ensureStopMarker(msg, ev) {
-  if (ev.status === 'error' && ev.error && !/请求失败/.test(msg.content || '')) noteFailure(msg, ev.error);
-  if (ev.status === 'stopped' && msg.content && !/\*\[已停止生成\]\*/.test(msg.content)) {
-    msg.content += '\n\n*[已停止生成]*';
+  if (ev.status === 'error' && ev.error && !(msg.content || '').includes(FAIL_PREFIX)) noteFailure(msg, ev.error);
+  if (ev.status === 'stopped' && msg.content && !msg.content.includes(STOP_MARKER)) {
+    msg.content += '\n\n' + STOP_MARKER;
   }
 }
 
@@ -455,7 +476,7 @@ async function pump(res, mine) {
 /** 快照 = "这个账号现在有哪几段在跑"：本地没有的补上，本地有而快照里没有的（掉线期间跑完了）收尾。 */
 /** 服务端的一条运行摘要 → 本地记录（**不覆盖本地已有的 localId**） */
 function mergeRun(r) {
-  const rec = runs.get(r.sessionId) || { sessionId: r.sessionId, steering: 0 };
+  const rec = getOrCreate(r.sessionId);
   rec.runId = r.runId || rec.runId;
   rec.liveId = r.liveId || rec.liveId || '';
   rec.title = r.title || rec.title || '';
@@ -513,9 +534,6 @@ export function reset() {
   patch({ hub: { connected: false, error: '' } });
   publish();
 }
-
-/** 兼容旧调用（切会话时曾经要断开单段运行的流）：统一口下**什么都不用断**。 */
-export function detach() { /* 一条 hub 看全部：切会话不断流 */ }
 
 /* ============================ 对外动作 ============================ */
 
@@ -583,7 +601,7 @@ function dropStalePlaceholder(sessionId, rec, placeholder) {
 }
 
 function registerRun(sessionId, runId, live) {
-  const rec = runs.get(sessionId) || { sessionId, steering: 0 };
+  const rec = getOrCreate(sessionId);
   const placeholder = placeholderOf(live, rec);
   Object.assign(rec, {
     runId: runId || rec.runId,
@@ -623,7 +641,11 @@ export async function stopRun(sessionId) {
   const sid = sessionId || state.activeSessId;
   const rec = runs.get(sid);
   if (!rec || rec.settled) return;
-  try { await post(EP.runStop, { id: rec.runId }); } catch { /* 已经结束了 */ }
+  try { await post(EP.runStop, { id: rec.runId }); }
+  catch (e) {
+    /* "已经结束"（409/404 之类）确实可以吞；网络错误吞掉的话界面继续转圈、用户以为没点上 */
+    if (e && e.network) toast('停止请求没有送达（网络问题）：回答还在生成，稍后再点一次', 'err');
+  }
 }
 
 /**
@@ -702,6 +724,9 @@ if (typeof document !== 'undefined') {
   window.addEventListener('online', wake);
 }
 
+/** detach() 已删（2026-10-06 审计）：统一事件口下切会话本来就不断流，
+   唯一的调用方（session.js 的 selectSession）也一并摘掉。
+
 /** 换会话/刷新后：把"这个会话有没有在跑的运行"与服务端对齐一次。
  *  · 有 → 接上（登记进 runs，界面继续显示"正在生成"）；
  *  · 没有 → 把本地还挂着 streaming 的孤儿占位结清（站点重启丢在途运行的那条路）。
@@ -765,8 +790,10 @@ function clearOrphanPlaceholders(sessionId) {
     if (empty) m.error = '这一轮没有跑完（服务端重启或生成被中断），没有内容保存下来，可以重新提问。';
   }
   if (state.activeSessId === sessionId) patch({ history: ensureMsgs(sess).slice() });
-  // 落盘交给宿主（它会写回会话对象并排队）——run.js 不直接依赖会话存储
-  hostHook('persistSession');
+  // 落盘交给宿主（它会写回会话对象并排队）——run.js 不直接依赖会话存储。
+  // 2026-10-06 修复：原先调的 hostHook('persistSession') 在 hooks 表里根本没有这个键，
+  // 是个静默空操作（清理结果要等下一次别的动作才被顺带落盘）。现在接的是真钩子。
+  hostHook('persistSession', sessionId);
   touch();
 }
 
